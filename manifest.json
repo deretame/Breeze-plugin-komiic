@@ -1,0 +1,15 @@
+{
+  "name": "Komiic",
+  "uuid": "00000000-0000-0000-0000-00000000e001",
+  "iconUrl": "https://raw.githubusercontent.com/deretame/Breeze-plugin-komiic/main/assets/app_icon.webp",
+  "creator": {
+    "name": "",
+    "describe": ""
+  },
+  "describe": "Komiic 漫画源插件",
+  "version": "0.0.1",
+  "home": "https://github.com/deretame/Breeze-plugin-komiic",
+  "updateUrl": "https://api.github.com/repos/deretame/Breeze-plugin-komiic/releases/latest",
+  "npmName": "breeze-plugin-komiic",
+  "function": []
+}
