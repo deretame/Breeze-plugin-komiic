@@ -1,4 +1,4 @@
-export const PLUGIN_ID = "00000000-0000-0000-0000-00000000e001";
+export const PLUGIN_ID = "cafbf766-0231-4f99-ace4-0a26631fff12";
 export const NOT_FOUND_IMAGE_URL = "";
 export const PLACEHOLDER_IMAGE_PATH = "placeholder/image-404.png";
 
