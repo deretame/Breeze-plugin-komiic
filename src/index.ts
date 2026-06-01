@@ -16,6 +16,19 @@ import {
 } from "./common";
 import { buildPluginInfo } from "./get-info";
 import { flutterTools, pluginConfig } from "./tools";
+import type {
+  CapabilitiesBundleContract,
+  ChapterContentContract,
+  ChapterWithPages,
+  ComicDetailContract,
+  ComicListSceneBundleContract,
+  ComicPagedListContract,
+  FilterBundleContract,
+  ListFavoriteFoldersResult,
+  ReadSnapshotContract,
+  SearchResultContract,
+  ToggleFavoriteResult,
+} from "../types/type";
 
 type BasePayload = {
   extern?: Record<string, unknown>;
@@ -43,6 +56,7 @@ type ReadSnapshotPayload = BasePayload & {
 type FetchImagePayload = BasePayload & {
   url?: string;
   timeoutMs?: number;
+  taskGroupKey?: string;
 };
 
 type SaveSettingsPayload = {
@@ -1186,11 +1200,11 @@ async function fetchFolderComicIds(
     : [];
 }
 
-async function getInfo() {
+async function getInfo(): Promise<ReturnType<typeof buildPluginInfo>> {
   return buildPluginInfo();
 }
 
-async function getCapabilities() {
+async function getCapabilities(): Promise<CapabilitiesBundleContract> {
   return {
     source: PLUGIN_ID,
     scheme: {
@@ -1212,7 +1226,9 @@ async function getCapabilities() {
   };
 }
 
-async function searchComic(payload: SearchPayload = {}) {
+async function searchComic(
+  payload: SearchPayload = {},
+): Promise<SearchResultContract> {
   const extern = toStringMap(payload.extern);
   const page = Math.max(1, toNumber(payload.page ?? extern.page, 1));
   const keyword = String(payload.keyword ?? extern.keyword ?? "").trim();
@@ -1289,18 +1305,31 @@ async function searchComic(payload: SearchPayload = {}) {
   };
 }
 
-async function getHomeRecent(payload: SearchPayload = {}) {
-  return searchComic({
+async function getHomeRecent(
+  payload: SearchPayload = {},
+): Promise<ComicPagedListContract> {
+  const result = await searchComic({
     page: payload.page,
     extern: {
       ...(payload.extern ?? {}),
       mode: "recent",
     },
   });
+  return {
+    source: result.source,
+    extern: result.extern,
+    scheme: result.scheme,
+    data: {
+      items: result.data.items,
+      hasReachedMax: result.data.paging.hasReachedMax,
+    },
+  };
 }
 
-async function getHomeRanking(payload: SearchPayload = {}) {
-  return searchComic({
+async function getHomeRanking(
+  payload: SearchPayload = {},
+): Promise<ComicPagedListContract> {
+  const result = await searchComic({
     page: payload.page,
     extern: {
       ...(payload.extern ?? {}),
@@ -1311,10 +1340,21 @@ async function getHomeRanking(payload: SearchPayload = {}) {
         ).trim() || RANKING_OPTIONS[0].value,
     },
   });
+  return {
+    source: result.source,
+    extern: result.extern,
+    scheme: result.scheme,
+    data: {
+      items: result.data.items,
+      hasReachedMax: result.data.paging.hasReachedMax,
+    },
+  };
 }
 
-async function getHomeCategory(payload: SearchPayload = {}) {
-  return searchComic({
+async function getHomeCategory(
+  payload: SearchPayload = {},
+): Promise<ComicPagedListContract> {
+  const result = await searchComic({
     page: payload.page,
     extern: {
       ...(payload.extern ?? {}),
@@ -1328,19 +1368,28 @@ async function getHomeCategory(payload: SearchPayload = {}) {
       status: String(toStringMap(payload.extern).status ?? "").trim(),
     },
   });
+  return {
+    source: result.source,
+    extern: result.extern,
+    scheme: result.scheme,
+    data: {
+      items: result.data.items,
+      hasReachedMax: result.data.paging.hasReachedMax,
+    },
+  };
 }
 
-async function getHomeCategoryFilterBundle() {
+async function getHomeCategoryFilterBundle(): Promise<FilterBundleContract> {
   return {
     source: PLUGIN_ID,
     scheme: {
       version: "1.0.0",
       type: "filter",
-      sections: [
+      fields: [
         {
           key: "categoryId",
-          title: "主题",
-          mode: "single",
+          kind: "choice" as const,
+          label: "主题",
           options: CATEGORY_OPTIONS.map((item) => ({
             label: item.label,
             value: item.value,
@@ -1354,8 +1403,8 @@ async function getHomeCategoryFilterBundle() {
         },
         {
           key: "orderBy",
-          title: "排序",
-          mode: "single",
+          kind: "choice" as const,
+          label: "排序",
           options: CATEGORY_SORT_OPTIONS.map((item) => ({
             label: item.label,
             value: item.value,
@@ -1369,8 +1418,8 @@ async function getHomeCategoryFilterBundle() {
         },
         {
           key: "status",
-          title: "状态",
-          mode: "single",
+          kind: "choice" as const,
+          label: "状态",
           options: CATEGORY_STATUS_OPTIONS.map((item) => ({
             label: item.label,
             value: item.value,
@@ -1384,21 +1433,21 @@ async function getHomeCategoryFilterBundle() {
         },
       ],
     },
-    data: {},
+    data: { values: { orderBy: "MONTH_VIEWS" } },
   };
 }
 
-async function getHomeRankingFilterBundle() {
+async function getHomeRankingFilterBundle(): Promise<FilterBundleContract> {
   return {
     source: PLUGIN_ID,
     scheme: {
       version: "1.0.0",
       type: "filter",
-      sections: [
+      fields: [
         {
           key: "orderBy",
-          title: "榜单",
-          mode: "single",
+          kind: "choice" as const,
+          label: "榜单",
           options: RANKING_OPTIONS.map((item) => ({
             label: item.label,
             value: item.value,
@@ -1412,13 +1461,13 @@ async function getHomeRankingFilterBundle() {
         },
       ],
     },
-    data: {},
+    data: { values: { orderBy: "MONTH_VIEWS" } },
   };
 }
 
 async function getCloudFavoriteFilterBundle(
-  payload: CloudFavoritePayload = {},
-) {
+  payload: { extern?: Record<string, unknown> } = {},
+): Promise<FilterBundleContract> {
   const extern = toStringMap(payload.extern);
   const folders = await fetchFolders();
   const defaultFolderId = "__all__";
@@ -1485,16 +1534,18 @@ async function getCloudFavoriteFilterBundle(
     data: {
       values: {
         folderId:
-          String(payload.folderId ?? extern.folderId ?? "").trim() ||
-          defaultFolderId,
-        order: String(payload.order ?? extern.order ?? "DATE_UPDATED"),
+          String(
+            toStringMap(payload)["folderId"] ?? extern["folderId"] ?? "",
+          ).trim() || defaultFolderId,
+        order: String(
+          toStringMap(payload)["order"] ?? extern["order"] ?? "DATE_UPDATED",
+        ),
       },
-      folderList: folders,
     },
   };
 }
 
-async function getCloudFavoriteSceneBundle() {
+async function getCloudFavoriteSceneBundle(): Promise<ComicListSceneBundleContract> {
   return {
     source: PLUGIN_ID,
     scheme: {
@@ -1530,7 +1581,9 @@ async function getCloudFavoriteSceneBundle() {
   };
 }
 
-async function getComicDetail(payload: ComicDetailPayload = {}) {
+async function getComicDetail(
+  payload: ComicDetailPayload = {},
+): Promise<ComicDetailContract> {
   const extern = toStringMap(payload.extern);
   const comicId = String(payload.comicId ?? extern.comicId ?? "").trim();
   if (!comicId) {
@@ -1678,7 +1731,9 @@ async function getComicDetail(payload: ComicDetailPayload = {}) {
   };
 }
 
-async function getChapter(payload: ChapterPayload = {}) {
+async function getChapter(
+  payload: ChapterPayload = {},
+): Promise<ChapterContentContract> {
   const extern = toStringMap(payload.extern);
   const comicId = String(payload.comicId ?? extern.comicId ?? "").trim();
   if (!comicId) {
@@ -1725,18 +1780,15 @@ async function getChapter(payload: ChapterPayload = {}) {
     })
     .filter((item): item is NonNullable<typeof item> => item !== null);
 
-  const chapter = {
-    epId: target.id,
-    epName: target.name || `章节 ${target.id}`,
-    length: pages.length,
-    epPages: String(pages.length),
-    docs: pages,
-    series: chapters.map((item) => ({
-      id: item.id,
-      name: item.name || `章节 ${item.id}`,
-      order: item.order,
-      extern: item.extern,
-    })),
+  const chapter: ChapterWithPages = {
+    id: target.id,
+    requestId: target.requestId,
+    logicalKey: target.logicalKey,
+    storageChapterId: target.storageChapterId,
+    name: target.name || `章节 ${target.id}`,
+    order: target.order,
+    pages,
+    extern: target.extern,
   };
 
   return {
@@ -1745,18 +1797,34 @@ async function getChapter(payload: ChapterPayload = {}) {
     chapterId: target.id,
     extern: payload.extern ?? null,
     scheme: {
-      version: "1.0.0",
-      type: "chapterContent",
+      version: "1.0.0" as const,
+      type: "chapterContent" as const,
       source: PLUGIN_ID,
     },
     data: {
+      comic: {
+        id: comicId,
+        source: PLUGIN_ID,
+        title: target.name || `章节 ${target.id}`,
+        extern: {},
+      },
       chapter,
+      chapters: chapters.map((item) => ({
+        id: item.id,
+        requestId: item.requestId,
+        logicalKey: item.logicalKey,
+        storageChapterId: item.storageChapterId,
+        name: item.name || `章节 ${item.id}`,
+        order: item.order,
+        extern: item.extern,
+      })),
     },
-    chapter,
   };
 }
 
-async function getReadSnapshot(payload: ReadSnapshotPayload = {}) {
+async function getReadSnapshot(
+  payload: ReadSnapshotPayload = {},
+): Promise<ReadSnapshotContract> {
   const extern = toStringMap(payload.extern);
   const comicId = String(payload.comicId ?? extern.comicId ?? "").trim();
   if (!comicId) {
@@ -1785,23 +1853,14 @@ async function getReadSnapshot(payload: ReadSnapshotPayload = {}) {
     chapterId: target.id,
     extern: payload.extern,
   });
-  const chapterDataMap =
-    toStringMap(toStringMap(chapterBundle.data).chapter).docs &&
-    toStringMap(chapterBundle.data).chapter
-      ? toStringMap(chapterBundle.data).chapter
-      : toStringMap(chapterBundle.chapter);
-  const chapterData = chapterDataMap as ChapterBundleShape;
-  const docs = Array.isArray(chapterData.docs) ? chapterData.docs : [];
-  const pages = docs.map((item: ChapterDoc) => {
-    const row = toStringMap(item);
-    return {
-      id: String(row.id ?? ""),
-      name: String(row.name ?? ""),
-      path: String(row.path ?? ""),
-      url: String(row.url ?? ""),
-      extern: toStringMap(row.extern),
-    };
-  });
+  const chapterData = chapterBundle.data.chapter;
+  const pages = chapterData.pages.map((page: any) => ({
+    id: String(page.id ?? ""),
+    name: String(page.name ?? ""),
+    path: String(page.path ?? ""),
+    url: String(page.url ?? ""),
+    extern: toStringMap(page.extern),
+  }));
 
   return {
     source: PLUGIN_ID,
@@ -1811,28 +1870,6 @@ async function getReadSnapshot(payload: ReadSnapshotPayload = {}) {
         id: String(comicInfo.id ?? comicId),
         source: PLUGIN_ID,
         title: String(comicInfo.title ?? ""),
-        description: String(comicInfo.description ?? ""),
-        cover: {
-          ...toStringMap(comicInfo.cover),
-          extern: toStringMap(toStringMap(comicInfo.cover).extern),
-        },
-        creator: {
-          ...toStringMap(comicInfo.creator),
-          avatar: {
-            ...toStringMap(toStringMap(comicInfo.creator).avatar),
-            extern: toStringMap(
-              toStringMap(toStringMap(comicInfo.creator).avatar).extern,
-            ),
-          },
-          extern: toStringMap(toStringMap(comicInfo.creator).extern),
-        },
-        titleMeta: (Array.isArray(comicInfo.titleMeta)
-          ? comicInfo.titleMeta
-          : []
-        ).map((item) => mapSnapshotAction(item)),
-        metadata: (Array.isArray(comicInfo.metadata) ? comicInfo.metadata : [])
-          .map((item) => mapSnapshotMetadata(item))
-          .filter((item) => item.value.length > 0),
         extern: toStringMap(comicInfo.extern),
       },
       chapter: {
@@ -1840,7 +1877,7 @@ async function getReadSnapshot(payload: ReadSnapshotPayload = {}) {
         requestId: target.requestId,
         logicalKey: target.logicalKey,
         storageChapterId: target.storageChapterId,
-        name: String(chapterData.epName ?? target.name ?? ""),
+        name: String(chapterData.name ?? target.name ?? ""),
         order: target.order,
         pages,
         extern: target.extern,
@@ -1858,7 +1895,9 @@ async function getReadSnapshot(payload: ReadSnapshotPayload = {}) {
   };
 }
 
-async function getCloudFavoriteData(payload: CloudFavoritePayload = {}) {
+async function getCloudFavoriteData(
+  payload: CloudFavoritePayload = {},
+): Promise<ComicPagedListContract> {
   const extern = toStringMap(payload.extern);
   const page = Math.max(1, toNumber(payload.page ?? extern.page, 1));
   let folderId = String(payload.folderId ?? extern.folderId ?? "").trim();
@@ -1878,15 +1917,8 @@ async function getCloudFavoriteData(payload: CloudFavoritePayload = {}) {
           card: "comic",
         },
         data: {
-          page,
-          total: 0,
           hasReachedMax: true,
           items: [],
-          raw: {
-            folderId: "__all__",
-            order,
-            ids: [],
-          },
         },
       };
     }
@@ -1920,17 +1952,8 @@ async function getCloudFavoriteData(payload: CloudFavoritePayload = {}) {
         card: "comic",
       },
       data: {
-        page,
-        total:
-          page * CATEGORY_PAGE_SIZE +
-          (items.length === CATEGORY_PAGE_SIZE ? 1 : 0),
         hasReachedMax: items.length < CATEGORY_PAGE_SIZE,
         items,
-        raw: {
-          folderId: "__all__",
-          order,
-          ids,
-        },
       },
     };
   }
@@ -1944,15 +1967,8 @@ async function getCloudFavoriteData(payload: CloudFavoritePayload = {}) {
         card: "comic",
       },
       data: {
-        page,
-        total: 0,
         hasReachedMax: true,
         items: [],
-        raw: {
-          folderId: "",
-          order,
-          ids: [],
-        },
       },
     };
   }
@@ -1979,22 +1995,15 @@ async function getCloudFavoriteData(payload: CloudFavoritePayload = {}) {
       card: "comic",
     },
     data: {
-      page,
-      total:
-        page * CATEGORY_PAGE_SIZE +
-        (items.length === CATEGORY_PAGE_SIZE ? 1 : 0),
       hasReachedMax: items.length < CATEGORY_PAGE_SIZE,
       items,
-      raw: {
-        folderId,
-        order,
-        ids,
-      },
     },
   };
 }
 
-async function toggleFavorite(payload: ToggleFavoritePayload = {}) {
+async function toggleFavorite(
+  payload: ToggleFavoritePayload = {},
+): Promise<ToggleFavoriteResult> {
   const comicId = String(payload.comicId ?? "").trim();
   if (!comicId) {
     throw new Error("comicId 不能为空");
@@ -2032,7 +2041,9 @@ async function toggleFavorite(payload: ToggleFavoritePayload = {}) {
   };
 }
 
-async function listFavoriteFolders(payload: FavoriteFolderPayload = {}) {
+async function listFavoriteFolders(
+  payload: FavoriteFolderPayload = {},
+): Promise<ListFavoriteFoldersResult> {
   const folders = await fetchFolders();
   const comicId = String(payload.comicId ?? "").trim();
   const selected = comicId
@@ -2071,9 +2082,10 @@ async function moveFavoriteToFolder(payload: FavoriteFolderPayload = {}) {
 
 async function fetchImageBytes({
   url = "",
-  timeoutMs = REQUEST_TIMEOUT_MS,
+  timeoutMs = 30000,
+  taskGroupKey = "",
   extern = {},
-}: FetchImagePayload = {}) {
+}: FetchImagePayload = {}): Promise<Uint8Array<ArrayBufferLike>> {
   const targetUrl = String(url).trim();
   if (!targetUrl) {
     throw new Error("url 不能为空");

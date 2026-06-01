@@ -11,7 +11,7 @@ export function buildPluginInfo() {
       describe: "",
     },
     describe: "Komiic 漫画源插件",
-    version: "0.0.2",
+    version: "0.0.3",
     home: "https://github.com/deretame/Breeze-plugin-komiic",
     updateUrl:
       "https://api.github.com/repos/deretame/Breeze-plugin-komiic/releases/latest",

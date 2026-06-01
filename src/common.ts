@@ -2,6 +2,8 @@ export const PLUGIN_ID = "cafbf766-0231-4f99-ace4-0a26631fff12";
 export const NOT_FOUND_IMAGE_URL = "";
 export const PLACEHOLDER_IMAGE_PATH = "placeholder/image-404.png";
 
+import type { ActionItem, MetadataListItem } from "../types/type";
+
 export function toStringMap(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -62,12 +64,15 @@ export function createBasicMetadata(
   type: string,
   name: string,
   values: unknown,
-) {
+): MetadataListItem {
   const list = Array.isArray(values) ? values : values == null ? [] : [values];
   return {
     type,
     name,
-    value: list.map((item) => String(item ?? "").trim()).filter(Boolean),
+    value: list
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+      .map((item) => ({ name: item, onTap: {}, extern: {} }) as ActionItem),
   };
 }
 
@@ -133,62 +138,5 @@ export function createPaging(page = 1, total = 1) {
   };
 }
 
-type FieldKind =
-  | "text"
-  | "password"
-  | "switch"
-  | "select"
-  | "choice"
-  | "multiChoice";
-
-type BaseField = {
-  key: string;
-  kind: FieldKind;
-  label: string;
-  fnPath?: string;
-  persist?: boolean;
-};
-
-type OptionField = BaseField & {
-  kind: "select" | "choice" | "multiChoice";
-  options?: Array<{ label: string; value: unknown }>;
-};
-
-type PlainField = BaseField & {
-  kind: "text" | "password" | "switch";
-};
-
-type SettingsField = OptionField | PlainField;
-
-export type SettingsBundleContract = {
-  source: string;
-  scheme: {
-    version: "1.0.0";
-    type: "settings";
-    sections: Array<{
-      id: string;
-      title: string;
-      fields: SettingsField[];
-    }>;
-  };
-  data: {
-    canShowUserInfo: boolean;
-    values: Record<string, unknown>;
-  };
-};
-
-type CapabilityAction = {
-  key?: string;
-  title: string;
-  fnPath: string;
-};
-
-export type CapabilitiesBundleContract = {
-  source: string;
-  scheme: {
-    version: "1.0.0";
-    type: "capabilities";
-    actions: CapabilityAction[];
-  };
-  data: Record<string, unknown>;
-};
+import type { SettingsBundleContract } from "../types/type";
+export type { SettingsBundleContract };
