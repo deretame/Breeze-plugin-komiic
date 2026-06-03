@@ -523,6 +523,21 @@ export type ChapterSummary = {
   extern: StringMap;
 };
 
+export type RecommendItem = {
+  source: string;
+  id: string;
+  title: string;
+  subtitle: string;
+  finished: boolean;
+  likesCount: number;
+  viewsCount: number;
+  updatedAt: string;
+  cover: ImageItem;
+  metadata: ActionItem[];
+  raw: StringMap;
+  extern: StringMap;
+};
+
 export type ChapterWithPages = ChapterSummary & {
   pages: ChapterPage[];
 };
@@ -535,12 +550,7 @@ export type ChapterContent = {
     extern: StringMap;
   };
   chapter: ChapterWithPages;
-  chapters: Array<{
-    id: string;
-    name: string;
-    order: number;
-    extern: StringMap;
-  }>;
+  chapters: ChapterSummary[];
 };
 
 export type ReadSnapshotData = {
@@ -617,7 +627,13 @@ export type ReadSnapshotContract = {
   data: ReadSnapshotData;
 };
 
-export type FieldKind = "text" | "password" | "switch" | "select" | "choice" | "multiChoice";
+export type FieldKind =
+  | "text"
+  | "password"
+  | "switch"
+  | "select"
+  | "choice"
+  | "multiChoice";
 
 export type BaseField = {
   key: string;

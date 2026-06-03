@@ -7,9 +7,137 @@
     "describe": ""
   },
   "describe": "Komiic 漫画源插件",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "home": "https://github.com/deretame/Breeze-plugin-komiic",
   "updateUrl": "https://api.github.com/repos/deretame/Breeze-plugin-komiic/releases/latest",
   "npmName": "breeze-plugin-komiic",
-  "function": []
+  "function": [
+    {
+      "id": "recent",
+      "title": "最近更新",
+      "action": {
+        "type": "openComicList",
+        "payload": {
+          "scene": {
+            "title": "最近更新",
+            "source": "cafbf766-0231-4f99-ace4-0a26631fff12",
+            "body": {
+              "type": "pluginPagedComicList",
+              "request": {
+                "fnPath": "getHomeRecent",
+                "core": {},
+                "extern": {
+                  "source": "recent",
+                  "mode": "recent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ranking",
+      "title": "排行榜",
+      "action": {
+        "type": "openComicList",
+        "payload": {
+          "scene": {
+            "title": "排行榜",
+            "source": "cafbf766-0231-4f99-ace4-0a26631fff12",
+            "body": {
+              "type": "pluginPagedComicList",
+              "request": {
+                "fnPath": "getHomeRanking",
+                "core": {},
+                "extern": {
+                  "source": "ranking",
+                  "mode": "ranking",
+                  "orderBy": "MONTH_VIEWS"
+                }
+              }
+            },
+            "filter": {
+              "fnPath": "getHomeRankingFilterBundle",
+              "extern": {
+                "source": "ranking",
+                "mode": "ranking",
+                "orderBy": "MONTH_VIEWS"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "category",
+      "title": "分类",
+      "action": {
+        "type": "openComicList",
+        "payload": {
+          "scene": {
+            "title": "分类",
+            "source": "cafbf766-0231-4f99-ace4-0a26631fff12",
+            "body": {
+              "type": "pluginPagedComicList",
+              "request": {
+                "fnPath": "getHomeCategory",
+                "core": {},
+                "extern": {
+                  "source": "category",
+                  "mode": "category",
+                  "categoryId": "0",
+                  "orderBy": "DATE_UPDATED",
+                  "status": ""
+                }
+              }
+            },
+            "filter": {
+              "fnPath": "getHomeCategoryFilterBundle",
+              "extern": {
+                "source": "category",
+                "mode": "category",
+                "categoryId": "0",
+                "orderBy": "DATE_UPDATED",
+                "status": ""
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cloudFavorite",
+      "title": "云端收藏",
+      "action": {
+        "type": "openComicList",
+        "payload": {
+          "scene": {
+            "title": "云端收藏",
+            "source": "cafbf766-0231-4f99-ace4-0a26631fff12",
+            "body": {
+              "type": "pluginPagedComicList",
+              "request": {
+                "fnPath": "getCloudFavoriteData",
+                "core": {},
+                "extern": {
+                  "source": "cloudFavorite",
+                  "folderId": "__default__",
+                  "order": "DATE_UPDATED"
+                }
+              }
+            },
+            "filter": {
+              "fnPath": "getCloudFavoriteFilterBundle",
+              "extern": {
+                "source": "cloudFavorite",
+                "folderId": "__default__",
+                "order": "DATE_UPDATED"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

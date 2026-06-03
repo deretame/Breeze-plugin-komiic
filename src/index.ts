@@ -4,8 +4,26 @@ import axios, {
   AxiosResponse,
   InternalAxiosRequestConfig,
 } from "axios";
+import type {
+  CapabilitiesBundleContract,
+  ChapterContentContract,
+  ChapterWithPages,
+  ComicDetailContract,
+  ComicListSceneBundleContract,
+  ComicPagedListContract,
+  CommentFeedContract,
+  CommentRepliesContract,
+  FilterBundleContract,
+  ListFavoriteFoldersResult,
+  PluginInfo,
+  ReadSnapshotContract,
+  RecommendItem,
+  SearchResultContract,
+  ToggleFavoriteResult,
+} from "../types/type";
 import {
   NOT_FOUND_IMAGE_URL,
+  PLACEHOLDER_IMAGE_PATH,
   PLUGIN_ID,
   SettingsBundleContract,
   createActionItem,
@@ -16,19 +34,6 @@ import {
 } from "./common";
 import { buildPluginInfo } from "./get-info";
 import { flutterTools, pluginConfig } from "./tools";
-import type {
-  CapabilitiesBundleContract,
-  ChapterContentContract,
-  ChapterWithPages,
-  ComicDetailContract,
-  ComicListSceneBundleContract,
-  ComicPagedListContract,
-  FilterBundleContract,
-  ListFavoriteFoldersResult,
-  ReadSnapshotContract,
-  SearchResultContract,
-  ToggleFavoriteResult,
-} from "../types/type";
 
 type BasePayload = {
   extern?: Record<string, unknown>;
@@ -107,6 +112,22 @@ type KomiicFolder = {
   dateUpdated?: string;
 };
 
+type KomiicComment = {
+  id?: string;
+  comicId?: string;
+  account?: {
+    id?: string;
+    nickname?: string;
+    profileImageUrl?: string;
+  };
+  message?: string;
+  replyTo?: {
+    id?: string;
+  } | null;
+  dateUpdated?: string;
+  dateCreated?: string;
+};
+
 type GraphQlResponse<T> = {
   data?: T;
   errors?: Array<{
@@ -163,12 +184,24 @@ type CloudFavoritePayload = {
   order?: string;
   extern?: Record<string, unknown>;
 };
+type CommentFeedPayload = {
+  comicId?: string;
+  page?: number;
+  extern?: Record<string, unknown>;
+};
+type CommentRepliesPayload = {
+  comicId?: string;
+  commentId?: string;
+  page?: number;
+  extern?: Record<string, unknown>;
+};
 
 const API_BASE = "https://komiic.com";
 const GRAPHQL_ENDPOINT = `${API_BASE}/api/query`;
 const AUTH_ACCOUNT_CONFIG_KEY = "auth.account";
 const AUTH_PASSWORD_CONFIG_KEY = "auth.password";
 const AUTH_TOKEN_CONFIG_KEY = "auth.token";
+const RECOMMEND_ENABLED_CONFIG_KEY = "feature.recommend.enabled";
 const REQUEST_TIMEOUT_MS = 30000;
 const SEARCH_PAGE_SIZE = 20;
 const CATEGORY_PAGE_SIZE = 30;
@@ -233,6 +266,7 @@ const CATEGORY_STATUS_OPTIONS = [
   { label: "連載中", value: "ONGOING" },
   { label: "完結", value: "END" },
 ] as const;
+const DEFAULT_FAVORITE_FOLDER_ID = "__default__";
 
 let authTokenCache: string | null = null;
 let authTokenInitPromise: Promise<string> | null = null;
@@ -421,6 +455,13 @@ async function loadAuthAccount() {
 
 async function loadAuthPassword() {
   return await loadConfigString(AUTH_PASSWORD_CONFIG_KEY, "");
+}
+
+async function loadRecommendEnabled() {
+  const value = (await loadConfigString(RECOMMEND_ENABLED_CONFIG_KEY, "false"))
+    .trim()
+    .toLowerCase();
+  return value === "true" || value === "1" || value === "yes";
 }
 
 async function loadAuthToken() {
@@ -766,6 +807,64 @@ function mapComicToGrid(comic: KomiicComic) {
   };
 }
 
+function mapComicToRecommend(
+  comic: Pick<KomiicComic, "id" | "title" | "imageUrl">,
+): RecommendItem {
+  const comicId = String(comic.id ?? "").trim();
+  const title = String(comic.title ?? "").trim() || comicId;
+  const coverUrl = String(comic.imageUrl ?? "").trim();
+  return {
+    source: PLUGIN_ID,
+    id: comicId,
+    title,
+    subtitle: "",
+    finished: false,
+    likesCount: 0,
+    viewsCount: 0,
+    updatedAt: "",
+    cover: createImage({
+      id: comicId,
+      url: coverUrl || NOT_FOUND_IMAGE_URL,
+      name: `${comicId}.jpg`,
+      path: `comic/${comicId}/cover.jpg`,
+      extern: {},
+    }),
+    metadata: [],
+    raw: {
+      id: comicId,
+      title,
+      imageUrl: coverUrl,
+    },
+    extern: {
+      comicId,
+    },
+  };
+}
+
+function mapComment(item: KomiicComment) {
+  const id = String(item.id ?? "").trim();
+  const avatarUrl = String(item.account?.profileImageUrl ?? "").trim();
+  return {
+    id,
+    author: {
+      name: String(item.account?.nickname ?? "").trim() || "Komiic 用户",
+      avatar: {
+        url: avatarUrl || NOT_FOUND_IMAGE_URL,
+        path: avatarUrl ? `comment/${id}/avatar.jpg` : PLACEHOLDER_IMAGE_PATH,
+      },
+    },
+    content: String(item.message ?? ""),
+    createdAt: formatDateTime(item.dateUpdated ?? item.dateCreated),
+    replyCount: 0,
+    replies: [],
+    extern: {
+      comicId: String(item.comicId ?? "").trim(),
+      commentId: id,
+      replyToId: String(item.replyTo?.id ?? "").trim(),
+    },
+  };
+}
+
 function mapSnapshotAction(item: unknown) {
   const row = toStringMap(item);
   return {
@@ -924,6 +1023,34 @@ async function fetchComicByIds(ids: string[]) {
           views
           favoriteCount
           lastChapterUpdate
+        }
+      }`,
+    ),
+    { skipAuth: true },
+  );
+  return Array.isArray(data.comicByIds) ? data.comicByIds : [];
+}
+
+async function fetchComicBasicsByIds(ids: string[]) {
+  const uniqueIds = Array.from(
+    new Set(ids.map((item) => String(item ?? "").trim()).filter(Boolean)),
+  );
+  if (!uniqueIds.length) {
+    return [];
+  }
+  const data = await queryGraphQl<{
+    comicByIds: Array<Pick<KomiicComic, "id" | "title" | "imageUrl">>;
+  }>(
+    createGraphQlQuery(
+      "comicByIds",
+      {
+        comicIds: uniqueIds,
+      },
+      `query comicByIds($comicIds: [ID]!) {
+        comicByIds(comicIds: $comicIds) {
+          id
+          title
+          imageUrl
         }
       }`,
     ),
@@ -1200,7 +1327,104 @@ async function fetchFolderComicIds(
     : [];
 }
 
-async function getInfo(): Promise<ReturnType<typeof buildPluginInfo>> {
+async function fetchCommentsByComicId(comicId: string, page: number) {
+  const data = await queryGraphQl<{ getMessagesByComicId: KomiicComment[] }>(
+    createGraphQlQuery(
+      "getMessagesByComicId",
+      {
+        comicId,
+        pagination: {
+          limit: 100,
+          offset: (page - 1) * 100,
+          orderBy: "DATE_UPDATED",
+          asc: true,
+        },
+      },
+      `query getMessagesByComicId($comicId: ID!, $pagination: Pagination!) {
+        getMessagesByComicId(comicId: $comicId, pagination: $pagination) {
+          id
+          comicId
+          account {
+            id
+            nickname
+            profileImageUrl
+          }
+          message
+          replyTo {
+            id
+          }
+          dateUpdated
+          dateCreated
+        }
+      }`,
+    ),
+    { skipAuth: true },
+  );
+  return Array.isArray(data.getMessagesByComicId)
+    ? data.getMessagesByComicId
+    : [];
+}
+
+async function fetchCommentReplies(commentId: string) {
+  const data = await queryGraphQl<{ messageChan: KomiicComment[] }>(
+    createGraphQlQuery(
+      "messageChan",
+      {
+        messageId: commentId,
+      },
+      `query messageChan($messageId: ID!) {
+        messageChan(messageId: $messageId) {
+          id
+          comicId
+          account {
+            id
+            nickname
+            profileImageUrl
+          }
+          message
+          replyTo {
+            id
+          }
+          dateUpdated
+          dateCreated
+        }
+      }`,
+    ),
+    { skipAuth: true },
+  );
+  return Array.isArray(data.messageChan) ? data.messageChan : [];
+}
+
+async function fetchCommentCountByComicId(comicId: string) {
+  const data = await queryGraphQl<{ messageCountByComicId: number }>(
+    {
+      operationName: "messageCountByComicId",
+      variables: {
+        comicId,
+      },
+      query: `query messageCountByComicId($comicId: ID!) {
+        messageCountByComicId(comicId: $comicId)
+      }`,
+    },
+    { skipAuth: true },
+  );
+  return toNumber(data.messageCountByComicId, 0);
+}
+
+function getFirstFolderId(folders: KomiicFolder[]) {
+  return String(folders[0]?.id ?? "").trim();
+}
+
+async function resolveFavoriteFolderId(folderId: string) {
+  const normalized = String(folderId ?? "").trim();
+  if (normalized && normalized !== DEFAULT_FAVORITE_FOLDER_ID) {
+    return normalized;
+  }
+  const folders = await fetchFolders();
+  return getFirstFolderId(folders);
+}
+
+async function getInfo(): Promise<PluginInfo> {
   return buildPluginInfo();
 }
 
@@ -1395,7 +1619,6 @@ async function getHomeCategoryFilterBundle(): Promise<FilterBundleContract> {
             value: item.value,
             result: {
               extern: {
-                mode: "category",
                 categoryId: item.value,
               },
             },
@@ -1410,7 +1633,6 @@ async function getHomeCategoryFilterBundle(): Promise<FilterBundleContract> {
             value: item.value,
             result: {
               extern: {
-                mode: "category",
                 orderBy: item.value,
               },
             },
@@ -1425,7 +1647,6 @@ async function getHomeCategoryFilterBundle(): Promise<FilterBundleContract> {
             value: item.value,
             result: {
               extern: {
-                mode: "category",
                 status: item.value,
               },
             },
@@ -1433,7 +1654,13 @@ async function getHomeCategoryFilterBundle(): Promise<FilterBundleContract> {
         },
       ],
     },
-    data: { values: { orderBy: "MONTH_VIEWS" } },
+    data: {
+      values: {
+        categoryId: "0",
+        orderBy: "DATE_UPDATED",
+        status: "",
+      },
+    },
   };
 }
 
@@ -1453,7 +1680,6 @@ async function getHomeRankingFilterBundle(): Promise<FilterBundleContract> {
             value: item.value,
             result: {
               extern: {
-                mode: "ranking",
                 orderBy: item.value,
               },
             },
@@ -1468,37 +1694,45 @@ async function getHomeRankingFilterBundle(): Promise<FilterBundleContract> {
 async function getCloudFavoriteFilterBundle(
   payload: { extern?: Record<string, unknown> } = {},
 ): Promise<FilterBundleContract> {
+  try {
+    await ensureAuthenticated();
+  } catch (e) {
+    console.error("fetchFolders error", e);
+    return {
+      source: PLUGIN_ID,
+      scheme: {
+        version: "1.0.0",
+        type: "filter",
+        fields: [],
+      },
+      data: { values: {} },
+    };
+  }
+
   const extern = toStringMap(payload.extern);
   const folders = await fetchFolders();
-  const defaultFolderId = "__all__";
-  const folderOptions = [
-    {
-      label: "全部收藏夹",
-      value: defaultFolderId,
-      result: {
-        extern: {
-          folderId: defaultFolderId,
-          order: String(extern.order ?? "DATE_UPDATED"),
-        },
+  const selectedFolderId =
+    String(
+      toStringMap(payload)["folderId"] ?? extern["folderId"] ?? "",
+    ).trim() ||
+    getFirstFolderId(folders) ||
+    DEFAULT_FAVORITE_FOLDER_ID;
+  const folderOptions = folders.map((item: KomiicFolder) => ({
+    label: String(item.name ?? "").trim() || "未命名收藏夹",
+    value: String(item.id ?? "").trim(),
+    result: {
+      extern: {
+        folderId: String(item.id ?? "").trim(),
+        order: String(extern.order ?? "DATE_UPDATED"),
       },
     },
-    ...folders.map((item: KomiicFolder) => ({
-      label: String(item.name ?? "").trim() || "未命名收藏夹",
-      value: String(item.id ?? "").trim(),
-      result: {
-        extern: {
-          folderId: String(item.id ?? "").trim(),
-          order: String(extern.order ?? "DATE_UPDATED"),
-        },
-      },
-    })),
-  ];
+  }));
 
   return {
     source: PLUGIN_ID,
     scheme: {
       version: "1.0.0",
-      type: "rankingFilter",
+      type: "filter",
       title: "云端收藏筛选",
       fields: [
         {
@@ -1515,17 +1749,23 @@ async function getCloudFavoriteFilterBundle(
             {
               label: "更新时间",
               value: "DATE_UPDATED",
-              result: { extern: { order: "DATE_UPDATED" } },
+              result: {
+                extern: { order: "DATE_UPDATED" },
+              },
             },
             {
               label: "观看数",
               value: "VIEWS",
-              result: { extern: { order: "VIEWS" } },
+              result: {
+                extern: { order: "VIEWS" },
+              },
             },
             {
               label: "收藏数",
               value: "FAVORITE_COUNT",
-              result: { extern: { order: "FAVORITE_COUNT" } },
+              result: {
+                extern: { order: "FAVORITE_COUNT" },
+              },
             },
           ],
         },
@@ -1533,13 +1773,16 @@ async function getCloudFavoriteFilterBundle(
     },
     data: {
       values: {
-        folderId:
-          String(
-            toStringMap(payload)["folderId"] ?? extern["folderId"] ?? "",
-          ).trim() || defaultFolderId,
+        folderId: selectedFolderId,
         order: String(
           toStringMap(payload)["order"] ?? extern["order"] ?? "DATE_UPDATED",
         ),
+        folders: folders.map((item: KomiicFolder) => ({
+          id: String(item.id ?? "").trim(),
+          name: String(item.name ?? "").trim() || "未命名收藏夹",
+          comicCount: toNumber(item.comicCount, 0),
+          updatedAt: formatDateTime(item.dateUpdated),
+        })),
       },
     },
   };
@@ -1563,7 +1806,7 @@ async function getCloudFavoriteSceneBundle(): Promise<ComicListSceneBundleContra
             core: {},
             extern: {
               source: "cloudFavorite",
-              folderId: "__all__",
+              folderId: DEFAULT_FAVORITE_FOLDER_ID,
               order: "DATE_UPDATED",
             },
           },
@@ -1572,7 +1815,7 @@ async function getCloudFavoriteSceneBundle(): Promise<ComicListSceneBundleContra
           fnPath: "getCloudFavoriteFilterBundle",
           extern: {
             source: "cloudFavorite",
-            folderId: "__all__",
+            folderId: DEFAULT_FAVORITE_FOLDER_ID,
             order: "DATE_UPDATED",
           },
         },
@@ -1590,12 +1833,20 @@ async function getComicDetail(
     throw new Error("comicId 不能为空");
   }
 
-  const recommendIds = await fetchRecommendIds(comicId);
-  const allIds = Array.from(new Set([...recommendIds, comicId]));
-  const [comicList, chapters, favoriteFolderIds] = await Promise.all([
-    fetchComicByIds(allIds),
-    fetchChaptersByComicId(comicId),
-    fetchComicFolderIds(comicId).catch(() => [] as string[]),
+  const recommendEnabled = await loadRecommendEnabled();
+  const recommendIdsPromise = recommendEnabled
+    ? fetchRecommendIds(comicId)
+    : Promise.resolve([] as string[]);
+  const [recommendIds, chapters, favoriteFolderIds, totalComments] =
+    await Promise.all([
+      recommendIdsPromise,
+      fetchChaptersByComicId(comicId),
+      fetchComicFolderIds(comicId).catch(() => [] as string[]),
+      fetchCommentCountByComicId(comicId).catch(() => 0),
+    ]);
+  const [comicList, recommendComics] = await Promise.all([
+    fetchComicByIds([comicId]),
+    recommendIds.length ? fetchComicBasicsByIds(recommendIds) : [],
   ]);
 
   const targetComic =
@@ -1605,9 +1856,11 @@ async function getComicDetail(
     throw new Error("未找到漫画详情");
   }
 
-  const recommend = comicList
-    .filter((item: KomiicComic) => String(item.id ?? "").trim() !== comicId)
-    .map((item: KomiicComic) => mapComicToGrid(item));
+  console.log(targetComic);
+
+  const recommend = recommendComics
+    .filter((item) => String(item.id ?? "").trim() !== comicId)
+    .map((item) => mapComicToRecommend(item));
   const authorNames = Array.isArray(targetComic.authors)
     ? targetComic.authors
         .map((item: { id?: string; name?: string }) =>
@@ -1662,7 +1915,6 @@ async function getComicDetail(
         createActionItem(`更新：${updateText || "未知"}`),
         createActionItem(`章节数：${mappedChapters.length}`),
         createActionItem(`观看：${toNumber(targetComic.views, 0)}`),
-        createActionItem(`收藏：${toNumber(targetComic.favoriteCount, 0)}`),
       ],
       creator: {
         id: "",
@@ -1702,10 +1954,10 @@ async function getComicDetail(
     recommend,
     totalViews: toNumber(targetComic.views, 0),
     totalLikes: toNumber(targetComic.favoriteCount, 0),
-    totalComments: 0,
+    totalComments,
     isFavourite: favoriteFolderIds.length > 0,
     isLiked: false,
-    allowComments: false,
+    allowComments: true,
     allowLike: false,
     allowCollected: true,
     allowDownload: true,
@@ -1898,65 +2150,15 @@ async function getReadSnapshot(
 async function getCloudFavoriteData(
   payload: CloudFavoritePayload = {},
 ): Promise<ComicPagedListContract> {
+  console.log("getCloudFavoriteData", payload);
   const extern = toStringMap(payload.extern);
   const page = Math.max(1, toNumber(payload.page ?? extern.page, 1));
-  let folderId = String(payload.folderId ?? extern.folderId ?? "").trim();
+  const folderId = await resolveFavoriteFolderId(
+    String(payload.folderId ?? extern.folderId ?? DEFAULT_FAVORITE_FOLDER_ID),
+  );
   const order =
     String(payload.order ?? extern.order ?? "DATE_UPDATED").trim() ||
     "DATE_UPDATED";
-  const isAllFolders = !folderId || folderId === "__all__";
-  if (isAllFolders) {
-    const folders = await fetchFolders();
-    if (!folders.length) {
-      return {
-        source: PLUGIN_ID,
-        extern: payload.extern ?? null,
-        scheme: {
-          version: "1.0.0",
-          type: "cloudFavoriteFeed",
-          card: "comic",
-        },
-        data: {
-          hasReachedMax: true,
-          items: [],
-        },
-      };
-    }
-    const allIdGroups = await Promise.all(
-      folders.map((folder) =>
-        fetchFolderComicIds(page, String(folder.id ?? "").trim(), order).catch(
-          () => [] as string[],
-        ),
-      ),
-    );
-    const ids = Array.from(new Set(allIdGroups.flat().filter(Boolean)));
-    const comics = ids.length ? await fetchComicByIds(ids) : [];
-    const idOrder = new Map(ids.map((id, index) => [id, index]));
-    const items = comics
-      .slice()
-      .sort((a, b) => {
-        const ai =
-          idOrder.get(String(a.id ?? "").trim()) ?? Number.MAX_SAFE_INTEGER;
-        const bi =
-          idOrder.get(String(b.id ?? "").trim()) ?? Number.MAX_SAFE_INTEGER;
-        return ai - bi;
-      })
-      .map((item) => mapComicToGrid(item));
-
-    return {
-      source: PLUGIN_ID,
-      extern: payload.extern ?? null,
-      scheme: {
-        version: "1.0.0",
-        type: "cloudFavoriteFeed",
-        card: "comic",
-      },
-      data: {
-        hasReachedMax: items.length < CATEGORY_PAGE_SIZE,
-        items,
-      },
-    };
-  }
   if (!folderId) {
     return {
       source: PLUGIN_ID,
@@ -1997,6 +2199,70 @@ async function getCloudFavoriteData(
     data: {
       hasReachedMax: items.length < CATEGORY_PAGE_SIZE,
       items,
+    },
+  };
+}
+
+async function getCommentFeed(
+  payload: CommentFeedPayload = {},
+): Promise<CommentFeedContract> {
+  const extern = toStringMap(payload.extern);
+  const comicId = String(payload.comicId ?? extern.comicId ?? "").trim();
+  if (!comicId) {
+    throw new Error("comicId 不能为空");
+  }
+  const page = Math.max(1, toNumber(payload.page ?? extern.page, 1));
+  const comments = await fetchCommentsByComicId(comicId, page);
+  const items = comments
+    .map((item) => mapComment(item))
+    .filter((item) => item.id);
+  return {
+    source: PLUGIN_ID,
+    extern: payload.extern ?? null,
+    scheme: {
+      version: "1.0.0",
+      type: "commentFeed",
+    },
+    data: {
+      topItems: [],
+      items,
+      paging: {
+        hasReachedMax: comments.length < 100,
+      },
+      replyMode: "lazy",
+      canComment: {
+        comic: false,
+        reply: false,
+      },
+    },
+  };
+}
+
+async function loadCommentReplies(
+  payload: CommentRepliesPayload = {},
+): Promise<CommentRepliesContract> {
+  const extern = toStringMap(payload.extern);
+  const commentId = String(payload.commentId ?? extern.commentId ?? "").trim();
+  if (!commentId) {
+    throw new Error("commentId 不能为空");
+  }
+  const replies = await fetchCommentReplies(commentId);
+  const items = replies
+    .map((item) => mapComment(item))
+    .filter((item) => item.id);
+  return {
+    source: PLUGIN_ID,
+    extern: payload.extern ?? null,
+    scheme: {
+      version: "1.0.0",
+      type: "commentReplies",
+    },
+    data: {
+      commentId,
+      items,
+      paging: {
+        hasReachedMax: true,
+      },
     },
   };
 }
@@ -2145,9 +2411,10 @@ async function fetchImageBytes({
 }
 
 async function getSettingsBundle(): Promise<SettingsBundleContract> {
-  const [account, password] = await Promise.all([
+  const [account, password, recommendEnabled] = await Promise.all([
     loadAuthAccount(),
     loadAuthPassword(),
+    loadRecommendEnabled(),
   ]);
   return {
     source: PLUGIN_ID,
@@ -2173,6 +2440,18 @@ async function getSettingsBundle(): Promise<SettingsBundleContract> {
             },
           ],
         },
+        {
+          id: "features",
+          title: "功能",
+          fields: [
+            {
+              key: RECOMMEND_ENABLED_CONFIG_KEY,
+              kind: "switch",
+              label: "打开推荐功能",
+              fnPath: "saveSettings",
+            },
+          ],
+        },
       ],
     },
     data: {
@@ -2180,6 +2459,7 @@ async function getSettingsBundle(): Promise<SettingsBundleContract> {
       values: {
         [AUTH_ACCOUNT_CONFIG_KEY]: account,
         [AUTH_PASSWORD_CONFIG_KEY]: password,
+        [RECOMMEND_ENABLED_CONFIG_KEY]: recommendEnabled,
       },
     },
   };
@@ -2198,7 +2478,9 @@ async function saveSettings(payload: SaveSettingsPayload = {}) {
     const rawValue =
       values[key] ??
       payloadMap[key] ??
-      (key === AUTH_ACCOUNT_CONFIG_KEY || key === AUTH_PASSWORD_CONFIG_KEY
+      (key === AUTH_ACCOUNT_CONFIG_KEY ||
+      key === AUTH_PASSWORD_CONFIG_KEY ||
+      key === RECOMMEND_ENABLED_CONFIG_KEY
         ? payloadMap.value
         : undefined);
     if (rawValue === undefined) continue;
@@ -2268,6 +2550,8 @@ export default {
   getComicDetail,
   getChapter,
   getReadSnapshot,
+  getCommentFeed,
+  loadCommentReplies,
   toggleFavorite,
   listFavoriteFolders,
   moveFavoriteToFolder,
