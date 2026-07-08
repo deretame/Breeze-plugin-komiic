@@ -2,7 +2,7 @@ export const PLUGIN_ID = "cafbf766-0231-4f99-ace4-0a26631fff12";
 export const NOT_FOUND_IMAGE_URL = "";
 export const PLACEHOLDER_IMAGE_PATH = "placeholder/image-404.png";
 
-import type { ActionItem, MetadataListItem } from "../types/type";
+import type { ActionItem, MetadataListItem } from "breeze-plugin-kit";
 
 export function toStringMap(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -138,5 +138,5 @@ export function createPaging(page = 1, total = 1) {
   };
 }
 
-import type { SettingsBundleContract } from "../types/type";
+import type { SettingsBundleContract } from "breeze-plugin-kit";
 export type { SettingsBundleContract };

@@ -1,4 +1,4 @@
-import type { PluginInfo } from "../types/type";
+import type { PluginInfo } from "breeze-plugin-kit";
 import { PLUGIN_ID } from "./common";
 
 export function buildPluginInfo(): PluginInfo {

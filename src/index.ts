@@ -20,7 +20,8 @@ import type {
   RecommendItem,
   SearchResultContract,
   ToggleFavoriteResult,
-} from "../types/type";
+} from "breeze-plugin-kit";
+import { flutterTools, pluginConfig } from "breeze-plugin-kit";
 import {
   NOT_FOUND_IMAGE_URL,
   PLACEHOLDER_IMAGE_PATH,
@@ -33,7 +34,6 @@ import {
   toStringMap,
 } from "./common";
 import { buildPluginInfo } from "./get-info";
-import { flutterTools, pluginConfig } from "./tools";
 
 type BasePayload = {
   extern?: Record<string, unknown>;
