@@ -1,27 +1,34 @@
 {
   "name": "breeze-plugin-komiic",
-  "version": "0.0.4",
-  "type": "module",
-  "packageManager": "pnpm@10.27.0",
+  "version": "0.0.5",
   "files": [
     "dist"
   ],
+  "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "pnpm typecheck && node --import tsx build/generate-version.ts && node --import tsx build/generate-manifest.ts && cross-env NODE_OPTIONS=\"--import tsx\" rspack build && node --import tsx build/generate-brotli.ts",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "build": "node --import tsx build/generate-version.ts && pnpm typecheck && node --import tsx build/generate-manifest.ts && cross-env NODE_OPTIONS=\"--import tsx\" rspack build && node --import tsx build/generate-brotli.ts",
     "dev": "pnpm dev:serve",
     "dev:serve": "tsx dev-server.ts"
   },
   "dependencies": {
     "axios": "^1.13.2",
-    "breeze-plugin-kit": "^0.3.0"
+    "breeze-plugin-kit": "^0.14.0"
   },
   "devDependencies": {
-    "@rspack/cli": "^2.0.1",
-    "@rspack/core": "^2.0.1",
-    "@types/node": "^25.6.0",
+    "@rspack/cli": "^2.1.8",
+    "@rspack/core": "^2.1.8",
+    "@types/node": "^26.1.2",
     "cross-env": "^10.1.0",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3"
-  }
+    "oxc-parser": "^0.143.0",
+    "oxfmt": "^0.55.0",
+    "oxlint": "^1.70.0",
+    "tsx": "^4.23.8",
+    "typescript": "^7.0.2"
+  },
+  "packageManager": "pnpm@12.5.0"
 }

@@ -2,7 +2,7 @@ export const PLUGIN_ID = "cafbf766-0231-4f99-ace4-0a26631fff12";
 export const NOT_FOUND_IMAGE_URL = "";
 export const PLACEHOLDER_IMAGE_PATH = "placeholder/image-404.png";
 
-import type { ActionItem, MetadataListItem } from "breeze-plugin-kit";
+import type { ActionItem, ComicInfoPageAction, MetadataListItem } from "breeze-plugin-kit";
 
 export function toStringMap(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -13,7 +13,7 @@ export function toStringMap(value: unknown): Record<string, unknown> {
 
 export function createActionItem(
   name: unknown,
-  onTap: Record<string, unknown> = {},
+  onTap: ComicInfoPageAction | null = null,
   extern: Record<string, unknown> = {},
 ) {
   return {
@@ -60,11 +60,7 @@ export function createMetadataActionList(
   };
 }
 
-export function createBasicMetadata(
-  type: string,
-  name: string,
-  values: unknown,
-): MetadataListItem {
+export function createBasicMetadata(type: string, name: string, values: unknown): MetadataListItem {
   const list = Array.isArray(values) ? values : values == null ? [] : [values];
   return {
     type,

@@ -1,9 +1,4 @@
-import axios, {
-  AxiosError,
-  AxiosHeaders,
-  AxiosResponse,
-  InternalAxiosRequestConfig,
-} from "axios";
+import axios, { AxiosError, AxiosHeaders, AxiosResponse, InternalAxiosRequestConfig } from "axios";
 import type {
   CapabilitiesBundleContract,
   ChapterContentContract,
@@ -15,13 +10,21 @@ import type {
   CommentRepliesContract,
   FilterBundleContract,
   ListFavoriteFoldersResult,
+  LoginBundleContract,
+  LoginSubmitResult,
   PluginInfo,
   ReadSnapshotContract,
   RecommendItem,
   SearchResultContract,
   ToggleFavoriteResult,
 } from "breeze-plugin-kit";
-import { flutterTools, pluginConfig } from "breeze-plugin-kit";
+import {
+  buildLoginBundle,
+  buildUnauthorizedError,
+  flutterTools,
+  pluginConfig,
+  readLoginValues,
+} from "breeze-plugin-kit";
 import {
   NOT_FOUND_IMAGE_URL,
   PLACEHOLDER_IMAGE_PATH,
@@ -72,6 +75,8 @@ type SaveSettingsPayload = {
 type LoginPayload = {
   account?: string;
   password?: string;
+  values?: Record<string, unknown>;
+  reason?: string;
   persistCredentials?: boolean;
   notifyResult?: boolean;
 };
@@ -147,26 +152,6 @@ type GraphQlCallOptions = {
 type RetriableAxiosRequestConfig = InternalAxiosRequestConfig & {
   __komiicRetryAuth?: boolean;
 };
-type ChapterDoc = {
-  id: string;
-  name: string;
-  path: string;
-  url: string;
-  extern: Record<string, unknown>;
-};
-type ChapterBundleShape = {
-  epId?: string;
-  epName?: string;
-  length?: number;
-  epPages?: string;
-  docs?: ChapterDoc[];
-  series?: Array<{
-    id: string;
-    name: string;
-    order: number;
-    extern: Record<string, unknown>;
-  }>;
-};
 type ToggleFavoritePayload = {
   comicId?: string;
   currentFavorite?: boolean;
@@ -197,7 +182,6 @@ type CommentRepliesPayload = {
 };
 
 const API_BASE = "https://komiic.com";
-const GRAPHQL_ENDPOINT = `${API_BASE}/api/query`;
 const AUTH_ACCOUNT_CONFIG_KEY = "auth.account";
 const AUTH_PASSWORD_CONFIG_KEY = "auth.password";
 const AUTH_TOKEN_CONFIG_KEY = "auth.token";
@@ -205,7 +189,6 @@ const RECOMMEND_ENABLED_CONFIG_KEY = "feature.recommend.enabled";
 const REQUEST_TIMEOUT_MS = 30000;
 const SEARCH_PAGE_SIZE = 20;
 const CATEGORY_PAGE_SIZE = 30;
-const CHAPTER_PAGE_SIZE = 100;
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -272,12 +255,9 @@ let authTokenCache: string | null = null;
 let authTokenInitPromise: Promise<string> | null = null;
 let loginInFlight: Promise<string> | null = null;
 
-function openSearchAction(
-  keyword: string,
-  extern: Record<string, unknown> = {},
-) {
+function openSearchAction(keyword: string, extern: Record<string, unknown> = {}) {
   return {
-    type: "openSearch",
+    type: "openSearch" as const,
     payload: {
       source: PLUGIN_ID,
       keyword,
@@ -299,13 +279,6 @@ function createPagingInfo(page: number, pages: number, total: number) {
 function toNumber(value: unknown, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function splitByCommonSeparators(value: unknown) {
-  return String(value ?? "")
-    .split(/[\/,，]/g)
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function formatDateTime(value: unknown) {
@@ -362,13 +335,7 @@ function extractRemoteErrorMessage(data: unknown) {
   const map = toStringMap(data);
   const errors = Array.isArray(map.errors) ? map.errors : [];
   const firstError = errors.length > 0 ? toStringMap(errors[0]) : {};
-  const candidates = [
-    map.message,
-    map.error,
-    map.errmsg,
-    map.msg,
-    firstError.message,
-  ];
+  const candidates = [map.message, map.error, map.errmsg, map.msg, firstError.message];
   for (const candidate of candidates) {
     const text = String(candidate ?? "").trim();
     if (text) {
@@ -412,16 +379,9 @@ function decodeConfigString(raw: unknown, fallback = ""): string {
       (parsed as Record<string, unknown>).ok === true &&
       "value" in (parsed as Record<string, unknown>)
     ) {
-      return decodeConfigString(
-        (parsed as Record<string, unknown>).value,
-        fallback,
-      );
+      return decodeConfigString((parsed as Record<string, unknown>).value, fallback);
     }
-    if (
-      typeof parsed === "string" ||
-      typeof parsed === "number" ||
-      typeof parsed === "boolean"
-    ) {
+    if (typeof parsed === "string" || typeof parsed === "number" || typeof parsed === "boolean") {
       return String(parsed);
     }
   } catch {
@@ -437,8 +397,7 @@ async function saveConfigString(key: string, value: string) {
 async function loadConfigString(key: string, fallback = "") {
   const raw = await pluginConfig.load(key, fallback);
   const normalized = decodeConfigString(raw, fallback);
-  const current =
-    typeof raw === "string" ? raw : raw == null ? "" : String(raw);
+  const current = typeof raw === "string" ? raw : raw == null ? "" : String(raw);
   if (current !== normalized) {
     try {
       await saveConfigString(key, normalized);
@@ -489,7 +448,7 @@ async function saveAuthToken(token: string) {
   await saveConfigString(AUTH_TOKEN_CONFIG_KEY, normalized);
 }
 
-function createGraphQlQuery<T>(
+function createGraphQlQuery(
   operationName: string,
   variables: Record<string, unknown>,
   query: string,
@@ -512,36 +471,30 @@ function createClient() {
     },
   });
 
-  client.interceptors.request.use(
-    async (config: InternalAxiosRequestConfig) => {
-      const url = String(config.url ?? "");
-      const token = await loadAuthToken();
-      const headers = AxiosHeaders.from(config.headers ?? {});
-      const skipAuth =
-        config.headers?.["x-komiic-skip-auth"] === "1" ||
-        headers.get("x-komiic-skip-auth") === "1";
-      headers.delete("x-komiic-skip-auth");
-      if (!skipAuth && token) {
-        headers.set("Authorization", `Bearer ${token}`);
-      } else {
-        headers.delete("Authorization");
-      }
-      if (!headers.get("Referer")) {
-        headers.set("Referer", `${API_BASE}/`);
-      }
-      if (!headers.get("User-Agent")) {
-        headers.set("User-Agent", DEFAULT_USER_AGENT);
-      }
-      if (url.startsWith("/api/image/")) {
-        headers.set(
-          "Accept",
-          "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        );
-      }
-      config.headers = headers;
-      return config;
-    },
-  );
+  client.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+    const url = String(config.url ?? "");
+    const token = await loadAuthToken();
+    const headers = AxiosHeaders.from(config.headers ?? {});
+    const skipAuth =
+      config.headers?.["x-komiic-skip-auth"] === "1" || headers.get("x-komiic-skip-auth") === "1";
+    headers.delete("x-komiic-skip-auth");
+    if (!skipAuth && token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    } else {
+      headers.delete("Authorization");
+    }
+    if (!headers.get("Referer")) {
+      headers.set("Referer", `${API_BASE}/`);
+    }
+    if (!headers.get("User-Agent")) {
+      headers.set("User-Agent", DEFAULT_USER_AGENT);
+    }
+    if (url.startsWith("/api/image/")) {
+      headers.set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+    }
+    config.headers = headers;
+    return config;
+  });
 
   client.interceptors.response.use(
     async (response: AxiosResponse<GraphQlResponse<unknown>>) => {
@@ -558,7 +511,7 @@ function createClient() {
         }
         let token = "";
         try {
-          token = await loginWithStoredCredentials();
+          token = String((await loginWithStoredCredentials()).data?.token ?? "");
         } catch {
           await saveAuthToken("");
           throw new Error(data?.errors?.[0]?.message || "登录已过期");
@@ -576,8 +529,7 @@ function createClient() {
     },
     async (error: AxiosError<GraphQlResponse<unknown>>) => {
       const response = error?.response;
-      const originalConfig = (error?.config ??
-        {}) as RetriableAxiosRequestConfig;
+      const originalConfig = (error?.config ?? {}) as RetriableAxiosRequestConfig;
       const message = String(
         response?.data?.errors?.[0]?.message ?? error?.message ?? "",
       ).toLowerCase();
@@ -591,7 +543,7 @@ function createClient() {
         }
         let token = "";
         try {
-          token = await loginWithStoredCredentials();
+          token = String((await loginWithStoredCredentials()).data?.token ?? "");
         } catch {
           await saveAuthToken("");
           throw error;
@@ -611,9 +563,42 @@ function createClient() {
 
 const http = createClient();
 
-async function loginWithPassword(payload: LoginPayload = {}) {
-  const account = String(payload.account ?? "").trim();
-  const password = String(payload.password ?? "");
+function readLoginFormValues(payload: LoginPayload = {}) {
+  const record = payload as Record<string, unknown>;
+  if (record.values !== undefined) {
+    const kitValues = readLoginValues(payload);
+    return {
+      account: String(kitValues.account ?? "").trim(),
+      password: String(kitValues.password ?? ""),
+    };
+  }
+  return {
+    account: String(record.account ?? "").trim(),
+    password: String(record.password ?? ""),
+  };
+}
+
+async function getLoginBundle(): Promise<LoginBundleContract> {
+  const account = await loadAuthAccount();
+  const password = await loadAuthPassword();
+  return buildLoginBundle(PLUGIN_ID, {
+    title: "Komiic 登录",
+    fields: [
+      { key: "account", kind: "text", label: "邮箱", required: true },
+      { key: "password", kind: "password", label: "密码", required: true },
+    ],
+    submitFnPath: "loginWithPassword",
+    submitText: "登录",
+    values: { account, password },
+  });
+}
+
+function unauthorizedError(message?: string): Error {
+  return buildUnauthorizedError(PLUGIN_ID, message ?? "登录过期，请重新登录");
+}
+
+async function loginWithPassword(payload: LoginPayload = {}): Promise<LoginSubmitResult> {
+  const { account, password } = readLoginFormValues(payload);
   if (!account || !password.trim()) {
     if (payload.notifyResult) {
       await flutterTools.showToast({
@@ -624,7 +609,12 @@ async function loginWithPassword(payload: LoginPayload = {}) {
     throw new Error("账号或密码不能为空，请先在设置中填写");
   }
   if (loginInFlight) {
-    return loginInFlight;
+    const token = await loginInFlight;
+    return {
+      source: PLUGIN_ID,
+      message: "Komiic 登录成功",
+      data: { account, password, token },
+    };
   }
   loginInFlight = (async () => {
     try {
@@ -646,8 +636,7 @@ async function loginWithPassword(payload: LoginPayload = {}) {
       const token = String(response.data?.token ?? "").trim();
       if (!token) {
         const remoteMessage =
-          extractRemoteErrorMessage(response.data) ||
-          `登录失败(${response.status})`;
+          extractRemoteErrorMessage(response.data) || `登录失败(${response.status})`;
         console.error("Komiic 登录失败: remote response", {
           status: response.status,
           data: response.data,
@@ -669,8 +658,7 @@ async function loginWithPassword(payload: LoginPayload = {}) {
       }
       return token;
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error ?? "登录失败");
+      const errorMessage = error instanceof Error ? error.message : String(error ?? "登录失败");
       if (payload.notifyResult) {
         await flutterTools.showToast({
           message: `Komiic 登录失败：${errorMessage}`,
@@ -682,17 +670,19 @@ async function loginWithPassword(payload: LoginPayload = {}) {
   })();
 
   try {
-    return await loginInFlight;
+    const token = await loginInFlight;
+    return {
+      source: PLUGIN_ID,
+      message: "Komiic 登录成功",
+      data: { account, password, token },
+    };
   } finally {
     loginInFlight = null;
   }
 }
 
 async function loginWithStoredCredentials() {
-  const [account, password] = await Promise.all([
-    loadAuthAccount(),
-    loadAuthPassword(),
-  ]);
+  const [account, password] = await Promise.all([loadAuthAccount(), loadAuthPassword()]);
   if (!account || !String(password).trim()) {
     throw new Error("未配置账号密码，无法自动登录");
   }
@@ -704,10 +694,7 @@ async function loginWithStoredCredentials() {
 }
 
 async function canAutoLogin() {
-  const [account, password] = await Promise.all([
-    loadAuthAccount(),
-    loadAuthPassword(),
-  ]);
+  const [account, password] = await Promise.all([loadAuthAccount(), loadAuthPassword()]);
   return Boolean(account && String(password).trim());
 }
 
@@ -718,18 +705,15 @@ async function ensureAuthenticated() {
     loadAuthToken(),
   ]);
   if (!account || !String(password).trim()) {
-    throw new Error("请先填写账号密码");
+    throw unauthorizedError("请先填写账号密码");
   }
   if (!token) {
-    throw new Error("请先登录账号");
+    throw unauthorizedError("请先登录账号");
   }
   return token;
 }
 
-async function queryGraphQl<T>(
-  request: GraphQlRequest,
-  options: GraphQlCallOptions = {},
-) {
+async function queryGraphQl<T>(request: GraphQlRequest, options: GraphQlCallOptions = {}) {
   const response = await http.post<
     GraphQlResponse<T>,
     AxiosResponse<GraphQlResponse<T>>,
@@ -754,14 +738,10 @@ function mapComicToGrid(comic: KomiicComic) {
   const comicId = String(comic.id ?? "").trim();
   const title = String(comic.title ?? "").trim() || comicId;
   const authorNames = Array.isArray(comic.authors)
-    ? comic.authors
-        .map((item) => String(item?.name ?? "").trim())
-        .filter(Boolean)
+    ? comic.authors.map((item) => String(item?.name ?? "").trim()).filter(Boolean)
     : [];
   const categoryNames = Array.isArray(comic.categories)
-    ? comic.categories
-        .map((item) => String(item?.name ?? "").trim())
-        .filter(Boolean)
+    ? comic.categories.map((item) => String(item?.name ?? "").trim()).filter(Boolean)
     : [];
   const statusText = String(comic.status ?? "").trim();
   const updatedAt = formatDateTime(comic.dateUpdated);
@@ -788,11 +768,7 @@ function mapComicToGrid(comic: KomiicComic) {
       createBasicMetadata("author", "作者", authorNames),
       createBasicMetadata("categories", "分类", categoryNames),
       createBasicMetadata("status", "状态", statusText ? [statusText] : []),
-      createBasicMetadata(
-        "update",
-        "更新",
-        relativeUpdate ? [relativeUpdate] : [],
-      ),
+      createBasicMetadata("update", "更新", relativeUpdate ? [relativeUpdate] : []),
       createBasicMetadata("works", "作品", []),
       createBasicMetadata("actors", "角色", []),
     ],
@@ -807,9 +783,7 @@ function mapComicToGrid(comic: KomiicComic) {
   };
 }
 
-function mapComicToRecommend(
-  comic: Pick<KomiicComic, "id" | "title" | "imageUrl">,
-): RecommendItem {
+function mapComicToRecommend(comic: Pick<KomiicComic, "id" | "title" | "imageUrl">): RecommendItem {
   const comicId = String(comic.id ?? "").trim();
   const title = String(comic.title ?? "").trim() || comicId;
   const coverUrl = String(comic.imageUrl ?? "").trim();
@@ -865,25 +839,6 @@ function mapComment(item: KomiicComment) {
   };
 }
 
-function mapSnapshotAction(item: unknown) {
-  const row = toStringMap(item);
-  return {
-    name: String(row.name ?? ""),
-    onTap: toStringMap(row.onTap),
-    extern: toStringMap(row.extern),
-  };
-}
-
-function mapSnapshotMetadata(item: unknown) {
-  const row = toStringMap(item);
-  const value = Array.isArray(row.value) ? row.value : [];
-  return {
-    type: String(row.type ?? ""),
-    name: String(row.name ?? ""),
-    value: value.map((entry) => mapSnapshotAction(entry)),
-  };
-}
-
 function normalizeChapterRefs(items: unknown[]) {
   return items
     .map((item) => toStringMap(item))
@@ -915,9 +870,7 @@ function pickTargetChapter(
   const chapterId = String(payload.chapterId ?? extern.chapterId ?? "").trim();
   const order = toNumber(extern.order ?? extern.sort, 0);
   return (
-    chapters.find(
-      (item) => item.id === chapterId || item.requestId === chapterId,
-    ) ??
+    chapters.find((item) => item.id === chapterId || item.requestId === chapterId) ??
     chapters.find((item) => order > 0 && item.order === order) ??
     chapters[0]
   );
@@ -1073,9 +1026,7 @@ async function fetchRecommendIds(comicId: string) {
     { skipAuth: true },
   );
   return Array.isArray(data.recommendComicById)
-    ? data.recommendComicById
-        .map((item: string) => String(item ?? "").trim())
-        .filter(Boolean)
+    ? data.recommendComicById.map((item: string) => String(item ?? "").trim()).filter(Boolean)
     : [];
 }
 
@@ -1229,9 +1180,7 @@ async function fetchComicFolderIds(comicId: string) {
     ),
   );
   return Array.isArray(data.comicInAccountFolders)
-    ? data.comicInAccountFolders
-        .map((item: string) => String(item ?? "").trim())
-        .filter(Boolean)
+    ? data.comicInAccountFolders.map((item: string) => String(item ?? "").trim()).filter(Boolean)
     : [];
 }
 
@@ -1291,11 +1240,7 @@ async function createFolder(name: string) {
   return toStringMap(data.createFolder);
 }
 
-async function fetchFolderComicIds(
-  page: number,
-  folderId: string,
-  orderBy: string,
-) {
+async function fetchFolderComicIds(page: number, folderId: string, orderBy: string) {
   await ensureAuthenticated();
   const data = await queryGraphQl<{
     folderComicIds: {
@@ -1360,9 +1305,7 @@ async function fetchCommentsByComicId(comicId: string, page: number) {
     ),
     { skipAuth: true },
   );
-  return Array.isArray(data.getMessagesByComicId)
-    ? data.getMessagesByComicId
-    : [];
+  return Array.isArray(data.getMessagesByComicId) ? data.getMessagesByComicId : [];
 }
 
 async function fetchCommentReplies(commentId: string) {
@@ -1450,9 +1393,7 @@ async function getCapabilities(): Promise<CapabilitiesBundleContract> {
   };
 }
 
-async function searchComic(
-  payload: SearchPayload = {},
-): Promise<SearchResultContract> {
+async function searchComic(payload: SearchPayload = {}): Promise<SearchResultContract> {
   const extern = toStringMap(payload.extern);
   const page = Math.max(1, toNumber(payload.page ?? extern.page, 1));
   const keyword = String(payload.keyword ?? extern.keyword ?? "").trim();
@@ -1463,8 +1404,7 @@ async function searchComic(
 
   if (searchMode === "recent") {
     comics = await fetchRecentUpdate(page);
-    total =
-      page * SEARCH_PAGE_SIZE + (comics.length === SEARCH_PAGE_SIZE ? 1 : 0);
+    total = page * SEARCH_PAGE_SIZE + (comics.length === SEARCH_PAGE_SIZE ? 1 : 0);
   } else if (searchMode === "category") {
     const categoryId = String(extern.categoryId ?? "0").trim() || "0";
     const orderBy =
@@ -1472,39 +1412,28 @@ async function searchComic(
       CATEGORY_SORT_OPTIONS[0].value;
     const status = String(extern.status ?? "").trim();
     comics = await fetchComicByCategories(page, categoryId, orderBy, status);
-    total =
-      page * CATEGORY_PAGE_SIZE +
-      (comics.length === CATEGORY_PAGE_SIZE ? 1 : 0);
+    total = page * CATEGORY_PAGE_SIZE + (comics.length === CATEGORY_PAGE_SIZE ? 1 : 0);
   } else if (searchMode === "ranking") {
     const orderBy =
-      String(extern.orderBy ?? RANKING_OPTIONS[0].value).trim() ||
-      RANKING_OPTIONS[0].value;
+      String(extern.orderBy ?? RANKING_OPTIONS[0].value).trim() || RANKING_OPTIONS[0].value;
     comics = await fetchHotComics(page, orderBy);
-    total =
-      page * SEARCH_PAGE_SIZE + (comics.length === SEARCH_PAGE_SIZE ? 1 : 0);
+    total = page * SEARCH_PAGE_SIZE + (comics.length === SEARCH_PAGE_SIZE ? 1 : 0);
   } else {
     if (!keyword) {
       throw new Error("keyword 不能为空");
     }
     const searchResult = await searchComicsByKeyword(keyword);
-    comics = (
-      Array.isArray(searchResult.comics) ? searchResult.comics : []
-    ) as KomiicComic[];
+    comics = (Array.isArray(searchResult.comics) ? searchResult.comics : []) as KomiicComic[];
     total = comics.length;
   }
 
-  const items = comics
-    .map((item) => mapComicToGrid(item))
-    .filter((item) => item.id);
-  const pageSize =
-    searchMode === "category" ? CATEGORY_PAGE_SIZE : SEARCH_PAGE_SIZE;
+  const items = comics.map((item) => mapComicToGrid(item)).filter((item) => item.id);
+  const pageSize = searchMode === "category" ? CATEGORY_PAGE_SIZE : SEARCH_PAGE_SIZE;
   const pages =
     searchMode || keyword
       ? Math.max(
           1,
-          items.length < pageSize && page === 1
-            ? 1
-            : page + (items.length === pageSize ? 1 : 0),
+          items.length < pageSize && page === 1 ? 1 : page + (items.length === pageSize ? 1 : 0),
         )
       : 1;
   const paging = createPagingInfo(page, pages, Math.max(total, items.length));
@@ -1529,13 +1458,11 @@ async function searchComic(
   };
 }
 
-async function getHomeRecent(
-  payload: SearchPayload = {},
-): Promise<ComicPagedListContract> {
+async function getHomeRecent(payload: SearchPayload = {}): Promise<ComicPagedListContract> {
   const result = await searchComic({
     page: payload.page,
     extern: {
-      ...(payload.extern ?? {}),
+      ...payload.extern,
       mode: "recent",
     },
   });
@@ -1550,18 +1477,15 @@ async function getHomeRecent(
   };
 }
 
-async function getHomeRanking(
-  payload: SearchPayload = {},
-): Promise<ComicPagedListContract> {
+async function getHomeRanking(payload: SearchPayload = {}): Promise<ComicPagedListContract> {
   const result = await searchComic({
     page: payload.page,
     extern: {
-      ...(payload.extern ?? {}),
+      ...payload.extern,
       mode: "ranking",
       orderBy:
-        String(
-          toStringMap(payload.extern).orderBy ?? RANKING_OPTIONS[0].value,
-        ).trim() || RANKING_OPTIONS[0].value,
+        String(toStringMap(payload.extern).orderBy ?? RANKING_OPTIONS[0].value).trim() ||
+        RANKING_OPTIONS[0].value,
     },
   });
   return {
@@ -1575,20 +1499,16 @@ async function getHomeRanking(
   };
 }
 
-async function getHomeCategory(
-  payload: SearchPayload = {},
-): Promise<ComicPagedListContract> {
+async function getHomeCategory(payload: SearchPayload = {}): Promise<ComicPagedListContract> {
   const result = await searchComic({
     page: payload.page,
     extern: {
-      ...(payload.extern ?? {}),
+      ...payload.extern,
       mode: "category",
-      categoryId:
-        String(toStringMap(payload.extern).categoryId ?? "0").trim() || "0",
+      categoryId: String(toStringMap(payload.extern).categoryId ?? "0").trim() || "0",
       orderBy:
-        String(
-          toStringMap(payload.extern).orderBy ?? CATEGORY_SORT_OPTIONS[0].value,
-        ).trim() || CATEGORY_SORT_OPTIONS[0].value,
+        String(toStringMap(payload.extern).orderBy ?? CATEGORY_SORT_OPTIONS[0].value).trim() ||
+        CATEGORY_SORT_OPTIONS[0].value,
       status: String(toStringMap(payload.extern).status ?? "").trim(),
     },
   });
@@ -1712,9 +1632,7 @@ async function getCloudFavoriteFilterBundle(
   const extern = toStringMap(payload.extern);
   const folders = await fetchFolders();
   const selectedFolderId =
-    String(
-      toStringMap(payload)["folderId"] ?? extern["folderId"] ?? "",
-    ).trim() ||
+    String(toStringMap(payload)["folderId"] ?? extern["folderId"] ?? "").trim() ||
     getFirstFolderId(folders) ||
     DEFAULT_FAVORITE_FOLDER_ID;
   const folderOptions = folders.map((item: KomiicFolder) => ({
@@ -1774,9 +1692,7 @@ async function getCloudFavoriteFilterBundle(
     data: {
       values: {
         folderId: selectedFolderId,
-        order: String(
-          toStringMap(payload)["order"] ?? extern["order"] ?? "DATE_UPDATED",
-        ),
+        order: String(toStringMap(payload)["order"] ?? extern["order"] ?? "DATE_UPDATED"),
         folders: folders.map((item: KomiicFolder) => ({
           id: String(item.id ?? "").trim(),
           name: String(item.name ?? "").trim() || "未命名收藏夹",
@@ -1824,9 +1740,7 @@ async function getCloudFavoriteSceneBundle(): Promise<ComicListSceneBundleContra
   };
 }
 
-async function getComicDetail(
-  payload: ComicDetailPayload = {},
-): Promise<ComicDetailContract> {
+async function getComicDetail(payload: ComicDetailPayload = {}): Promise<ComicDetailContract> {
   const extern = toStringMap(payload.extern);
   const comicId = String(payload.comicId ?? extern.comicId ?? "").trim();
   if (!comicId) {
@@ -1837,21 +1751,19 @@ async function getComicDetail(
   const recommendIdsPromise = recommendEnabled
     ? fetchRecommendIds(comicId)
     : Promise.resolve([] as string[]);
-  const [recommendIds, chapters, favoriteFolderIds, totalComments] =
-    await Promise.all([
-      recommendIdsPromise,
-      fetchChaptersByComicId(comicId),
-      fetchComicFolderIds(comicId).catch(() => [] as string[]),
-      fetchCommentCountByComicId(comicId).catch(() => 0),
-    ]);
+  const [recommendIds, chapters, favoriteFolderIds, totalComments] = await Promise.all([
+    recommendIdsPromise,
+    fetchChaptersByComicId(comicId),
+    fetchComicFolderIds(comicId).catch(() => [] as string[]),
+    fetchCommentCountByComicId(comicId).catch(() => 0),
+  ]);
   const [comicList, recommendComics] = await Promise.all([
     fetchComicByIds([comicId]),
     recommendIds.length ? fetchComicBasicsByIds(recommendIds) : [],
   ]);
 
   const targetComic =
-    comicList.find((item) => String(item.id ?? "").trim() === comicId) ??
-    comicList[0];
+    comicList.find((item) => String(item.id ?? "").trim() === comicId) ?? comicList[0];
   if (!targetComic) {
     throw new Error("未找到漫画详情");
   }
@@ -1863,16 +1775,12 @@ async function getComicDetail(
     .map((item) => mapComicToRecommend(item));
   const authorNames = Array.isArray(targetComic.authors)
     ? targetComic.authors
-        .map((item: { id?: string; name?: string }) =>
-          String(item?.name ?? "").trim(),
-        )
+        .map((item: { id?: string; name?: string }) => String(item?.name ?? "").trim())
         .filter(Boolean)
     : [];
   const tags = Array.isArray(targetComic.categories)
     ? targetComic.categories
-        .map((item: { id?: string; name?: string }) =>
-          String(item?.name ?? "").trim(),
-        )
+        .map((item: { id?: string; name?: string }) => String(item?.name ?? "").trim())
         .filter(Boolean)
     : [];
   const mappedChapters = chapters
@@ -1881,8 +1789,7 @@ async function getComicDetail(
       if (!chapterId) return null;
       const serial = String(item.serial ?? "").trim();
       const type = String(item.type ?? "").trim();
-      const chapterName =
-        type === "book" ? `卷${serial}` : serial || `第${index + 1}话`;
+      const chapterName = type === "book" ? `卷${serial}` : serial || `第${index + 1}话`;
       return {
         id: chapterId,
         requestId: chapterId,
@@ -1926,7 +1833,7 @@ async function getComicDetail(
           path: "",
           extern: {},
         }),
-        onTap: {},
+        onTap: null,
         extern: {},
       },
       description: getRelativeUpdateText(targetComic.dateUpdated),
@@ -1959,6 +1866,7 @@ async function getComicDetail(
     isLiked: false,
     allowComments: true,
     allowLike: false,
+    allowLikeReason: "Komiic 暂不支持点赞",
     allowCollected: true,
     allowDownload: true,
     extern: {},
@@ -1983,9 +1891,7 @@ async function getComicDetail(
   };
 }
 
-async function getChapter(
-  payload: ChapterPayload = {},
-): Promise<ChapterContentContract> {
+async function getChapter(payload: ChapterPayload = {}): Promise<ChapterContentContract> {
   const extern = toStringMap(payload.extern);
   const comicId = String(payload.comicId ?? extern.comicId ?? "").trim();
   if (!comicId) {
@@ -1997,9 +1903,7 @@ async function getChapter(
     extern: payload.extern,
   });
   const normal = toStringMap(toStringMap(detail.data).normal);
-  const chapters = normalizeChapterRefs(
-    Array.isArray(normal.eps) ? normal.eps : [],
-  );
+  const chapters = normalizeChapterRefs(Array.isArray(normal.eps) ? normal.eps : []);
   if (!chapters.length) {
     throw new Error("未找到章节");
   }
@@ -2074,9 +1978,7 @@ async function getChapter(
   };
 }
 
-async function getReadSnapshot(
-  payload: ReadSnapshotPayload = {},
-): Promise<ReadSnapshotContract> {
+async function getReadSnapshot(payload: ReadSnapshotPayload = {}): Promise<ReadSnapshotContract> {
   const extern = toStringMap(payload.extern);
   const comicId = String(payload.comicId ?? extern.comicId ?? "").trim();
   if (!comicId) {
@@ -2089,9 +1991,7 @@ async function getReadSnapshot(
   });
   const normal = toStringMap(toStringMap(detail.data).normal);
   const comicInfo = toStringMap(normal.comicInfo);
-  const chapters = normalizeChapterRefs(
-    Array.isArray(normal.eps) ? normal.eps : [],
-  );
+  const chapters = normalizeChapterRefs(Array.isArray(normal.eps) ? normal.eps : []);
   if (!chapters.length) {
     throw new Error("未找到可阅读章节");
   }
@@ -2156,9 +2056,7 @@ async function getCloudFavoriteData(
   const folderId = await resolveFavoriteFolderId(
     String(payload.folderId ?? extern.folderId ?? DEFAULT_FAVORITE_FOLDER_ID),
   );
-  const order =
-    String(payload.order ?? extern.order ?? "DATE_UPDATED").trim() ||
-    "DATE_UPDATED";
+  const order = String(payload.order ?? extern.order ?? "DATE_UPDATED").trim() || "DATE_UPDATED";
   if (!folderId) {
     return {
       source: PLUGIN_ID,
@@ -2180,10 +2078,8 @@ async function getCloudFavoriteData(
   const items = comics
     .slice()
     .sort((a, b) => {
-      const ai =
-        idOrder.get(String(a.id ?? "").trim()) ?? Number.MAX_SAFE_INTEGER;
-      const bi =
-        idOrder.get(String(b.id ?? "").trim()) ?? Number.MAX_SAFE_INTEGER;
+      const ai = idOrder.get(String(a.id ?? "").trim()) ?? Number.MAX_SAFE_INTEGER;
+      const bi = idOrder.get(String(b.id ?? "").trim()) ?? Number.MAX_SAFE_INTEGER;
       return ai - bi;
     })
     .map((item) => mapComicToGrid(item));
@@ -2203,9 +2099,7 @@ async function getCloudFavoriteData(
   };
 }
 
-async function getCommentFeed(
-  payload: CommentFeedPayload = {},
-): Promise<CommentFeedContract> {
+async function getCommentFeed(payload: CommentFeedPayload = {}): Promise<CommentFeedContract> {
   const extern = toStringMap(payload.extern);
   const comicId = String(payload.comicId ?? extern.comicId ?? "").trim();
   if (!comicId) {
@@ -2213,9 +2107,7 @@ async function getCommentFeed(
   }
   const page = Math.max(1, toNumber(payload.page ?? extern.page, 1));
   const comments = await fetchCommentsByComicId(comicId, page);
-  const items = comments
-    .map((item) => mapComment(item))
-    .filter((item) => item.id);
+  const items = comments.map((item) => mapComment(item)).filter((item) => item.id);
   return {
     source: PLUGIN_ID,
     extern: payload.extern ?? null,
@@ -2247,9 +2139,7 @@ async function loadCommentReplies(
     throw new Error("commentId 不能为空");
   }
   const replies = await fetchCommentReplies(commentId);
-  const items = replies
-    .map((item) => mapComment(item))
-    .filter((item) => item.id);
+  const items = replies.map((item) => mapComment(item)).filter((item) => item.id);
   return {
     source: PLUGIN_ID,
     extern: payload.extern ?? null,
@@ -2267,9 +2157,7 @@ async function loadCommentReplies(
   };
 }
 
-async function toggleFavorite(
-  payload: ToggleFavoritePayload = {},
-): Promise<ToggleFavoriteResult> {
+async function toggleFavorite(payload: ToggleFavoritePayload = {}): Promise<ToggleFavoriteResult> {
   const comicId = String(payload.comicId ?? "").trim();
   if (!comicId) {
     throw new Error("comicId 不能为空");
@@ -2298,9 +2186,7 @@ async function toggleFavorite(
   }
 
   const folderIds = await fetchComicFolderIds(comicId);
-  await Promise.all(
-    folderIds.map((folderId) => removeComicFromFolder(comicId, folderId)),
-  );
+  await Promise.all(folderIds.map((folderId) => removeComicFromFolder(comicId, folderId)));
   return {
     favorited: false,
     nextStep: "none",
@@ -2312,9 +2198,7 @@ async function listFavoriteFolders(
 ): Promise<ListFavoriteFoldersResult> {
   const folders = await fetchFolders();
   const comicId = String(payload.comicId ?? "").trim();
-  const selected = comicId
-    ? await fetchComicFolderIds(comicId).catch(() => [] as string[])
-    : [];
+  const selected = comicId ? await fetchComicFolderIds(comicId).catch(() => [] as string[]) : [];
   return {
     items: folders.map((item: KomiicFolder) => ({
       id: String(item.id ?? "").trim(),
@@ -2349,7 +2233,6 @@ async function moveFavoriteToFolder(payload: FavoriteFolderPayload = {}) {
 async function fetchImageBytes({
   url = "",
   timeoutMs = 30000,
-  taskGroupKey = "",
   extern = {},
 }: FetchImagePayload = {}): Promise<Uint8Array<ArrayBufferLike>> {
   const targetUrl = String(url).trim();
@@ -2359,9 +2242,7 @@ async function fetchImageBytes({
   const externMap = toStringMap(extern);
   const externHeaders = toStringMap(externMap.headers);
   const referer = (() => {
-    const providedReferer = String(
-      externHeaders.referer ?? externHeaders.Referer ?? "",
-    ).trim();
+    const providedReferer = String(externHeaders.referer ?? externHeaders.Referer ?? "").trim();
     if (providedReferer) {
       return providedReferer;
     }
@@ -2393,10 +2274,7 @@ async function fetchImageBytes({
     timeout: Math.max(0, Number(timeoutMs) || REQUEST_TIMEOUT_MS),
     headers: {
       ...Object.fromEntries(
-        Object.entries(externHeaders).map(([key, value]) => [
-          key,
-          String(value ?? ""),
-        ]),
+        Object.entries(externHeaders).map(([key, value]) => [key, String(value ?? "")]),
       ),
       Referer: referer,
       Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
@@ -2410,57 +2288,98 @@ async function fetchImageBytes({
   return bytes;
 }
 
+function compareVersions(a: string, b: string): number {
+  const pa = String(a ?? "")
+    .split(".")
+    .map((x) => Number(x) || 0);
+  const pb = String(b ?? "")
+    .split(".")
+    .map((x) => Number(x) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i += 1) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+async function isLegacyHost(): Promise<boolean> {
+  const version = await flutterTools.getAppVersion();
+  return compareVersions(version, "3.0.34") < 0;
+}
+
 async function getSettingsBundle(): Promise<SettingsBundleContract> {
   const [account, password, recommendEnabled] = await Promise.all([
     loadAuthAccount(),
     loadAuthPassword(),
     loadRecommendEnabled(),
   ]);
+  const legacyHost = await isLegacyHost();
   return {
     source: PLUGIN_ID,
     scheme: {
       version: "1.0.0",
       type: "settings",
-      sections: [
-        {
-          id: "account",
-          title: "账号",
-          fields: [
+      sections: legacyHost
+        ? [
             {
-              key: AUTH_ACCOUNT_CONFIG_KEY,
-              kind: "text",
-              label: "邮箱",
-              fnPath: "saveSettings",
+              id: "account",
+              title: "账号",
+              fields: [
+                {
+                  key: AUTH_ACCOUNT_CONFIG_KEY,
+                  kind: "text",
+                  label: "邮箱",
+                  fnPath: "saveSettings",
+                },
+                {
+                  key: AUTH_PASSWORD_CONFIG_KEY,
+                  kind: "password",
+                  label: "密码",
+                  fnPath: "saveSettings",
+                },
+              ],
             },
             {
-              key: AUTH_PASSWORD_CONFIG_KEY,
-              kind: "password",
-              label: "密码",
-              fnPath: "saveSettings",
+              id: "features",
+              title: "功能",
+              fields: [
+                {
+                  key: RECOMMEND_ENABLED_CONFIG_KEY,
+                  kind: "switch",
+                  label: "打开推荐功能",
+                  fnPath: "saveSettings",
+                },
+              ],
+            },
+          ]
+        : [
+            {
+              id: "features",
+              title: "功能",
+              fields: [
+                {
+                  key: RECOMMEND_ENABLED_CONFIG_KEY,
+                  kind: "switch",
+                  label: "打开推荐功能",
+                  fnPath: "saveSettings",
+                },
+              ],
             },
           ],
-        },
-        {
-          id: "features",
-          title: "功能",
-          fields: [
-            {
-              key: RECOMMEND_ENABLED_CONFIG_KEY,
-              kind: "switch",
-              label: "打开推荐功能",
-              fnPath: "saveSettings",
-            },
-          ],
-        },
-      ],
     },
     data: {
       canShowUserInfo: false,
-      values: {
-        [AUTH_ACCOUNT_CONFIG_KEY]: account,
-        [AUTH_PASSWORD_CONFIG_KEY]: password,
-        [RECOMMEND_ENABLED_CONFIG_KEY]: recommendEnabled,
-      },
+      values: legacyHost
+        ? {
+            [AUTH_ACCOUNT_CONFIG_KEY]: account,
+            [AUTH_PASSWORD_CONFIG_KEY]: password,
+            [RECOMMEND_ENABLED_CONFIG_KEY]: recommendEnabled,
+          }
+        : {
+            [RECOMMEND_ENABLED_CONFIG_KEY]: recommendEnabled,
+          },
+      canLogin: true,
     },
   };
 }
@@ -2468,10 +2387,7 @@ async function getSettingsBundle(): Promise<SettingsBundleContract> {
 async function saveSettings(payload: SaveSettingsPayload = {}) {
   const payloadMap = toStringMap(payload);
   const values = toStringMap(payloadMap.values);
-  const keys = new Set<string>([
-    ...Object.keys(payloadMap),
-    ...Object.keys(values),
-  ]);
+  const keys = new Set<string>([...Object.keys(payloadMap), ...Object.keys(values)]);
 
   for (const key of keys) {
     if (key === "values" || key === "value") continue;
@@ -2510,10 +2426,7 @@ async function saveSettings(payload: SaveSettingsPayload = {}) {
 }
 
 async function init() {
-  const [account, password] = await Promise.all([
-    loadAuthAccount(),
-    loadAuthPassword(),
-  ]);
+  const [account, password] = await Promise.all([loadAuthAccount(), loadAuthPassword()]);
   if (account && password.trim()) {
     try {
       await loginWithPassword({
@@ -2558,5 +2471,6 @@ export default {
   fetchImageBytes,
   getSettingsBundle,
   saveSettings,
+  getLoginBundle,
   loginWithPassword,
 };
