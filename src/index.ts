@@ -9,9 +9,14 @@ import type {
   CommentFeedContract,
   CommentRepliesContract,
   FilterBundleContract,
+  GetPluginCloudFavoritePagesBundlePayload,
+  GetPluginHomePagesBundlePayload,
   ListFavoriteFoldersResult,
   LoginBundleContract,
   LoginSubmitResult,
+  PluginCloudFavoritePagesBundleContract,
+  PluginHomePagesBundleContract,
+  PluginHomeTab,
   PluginInfo,
   ReadSnapshotContract,
   RecommendItem,
@@ -36,7 +41,7 @@ import {
   createMetadataActionList,
   toStringMap,
 } from "./common";
-import { buildPluginInfo } from "./get-info";
+import { buildPluginInfo, categoryScene, cloudFavoriteScene, rankingScene, recentScene } from "./get-info";
 
 type BasePayload = {
   extern?: Record<string, unknown>;
@@ -2427,25 +2432,60 @@ async function saveSettings(payload: SaveSettingsPayload = {}) {
   };
 }
 
-async function init() {
+async function loginForInit(): Promise<void> {
   const [account, password] = await Promise.all([loadAuthAccount(), loadAuthPassword()]);
-  if (account && password.trim()) {
+  if (!account || !String(password).trim()) {
+    console.info("[komiic.init] skip login: no credentials");
+    return;
+  }
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await loginWithPassword({
-        account,
-        password,
-        persistCredentials: true,
-      });
-    } catch {
-      // ignore eager login failure
+      await loginWithPassword({ account, password, persistCredentials: true });
+      console.info(`[komiic.init] login ok (attempt ${attempt})`);
+      return;
+    } catch (error) {
+      lastError = error;
+      console.warn(`[komiic.init] login failed (attempt ${attempt}/3)`, error);
     }
   }
+  throw lastError instanceof Error ? lastError : new Error(`登录失败，已重试 3 次: ${String(lastError)}`);
+}
+
+async function init() {
+  await loginForInit();
   return {
     source: PLUGIN_ID,
     data: {
       ok: true,
       hasToken: Boolean(await loadAuthToken()),
     },
+  };
+}
+
+async function getPluginHomePagesBundle(
+  _payload: GetPluginHomePagesBundlePayload = {},
+): Promise<PluginHomePagesBundleContract> {
+  const tabs: PluginHomeTab[] = [
+    { id: "recent", title: "最近更新", scene: recentScene },
+    { id: "ranking", title: "排行榜", scene: rankingScene },
+    { id: "category", title: "分类", scene: categoryScene },
+  ];
+  return {
+    source: PLUGIN_ID,
+    scheme: { version: "1.0.0", type: "homePagesBundle" },
+    data: { tabs },
+  };
+}
+
+async function getPluginCloudFavoritePagesBundle(
+  _payload: GetPluginCloudFavoritePagesBundlePayload = {},
+): Promise<PluginCloudFavoritePagesBundleContract> {
+  const tabs: PluginHomeTab[] = [{ id: "cloudFavorite", title: "云端收藏", scene: cloudFavoriteScene }];
+  return {
+    source: PLUGIN_ID,
+    scheme: { version: "1.0.0", type: "cloudFavoritePagesBundle" },
+    data: { tabs },
   };
 }
 
@@ -2461,6 +2501,8 @@ export default {
   getCloudFavoriteFilterBundle,
   getCloudFavoriteSceneBundle,
   getCloudFavoriteData,
+  getPluginHomePagesBundle,
+  getPluginCloudFavoritePagesBundle,
   searchComic,
   getComicDetail,
   getChapter,

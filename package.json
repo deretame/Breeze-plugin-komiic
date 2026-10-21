@@ -1,6 +1,6 @@
 {
   "name": "breeze-plugin-komiic",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "files": [
     "dist"
   ],
@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "axios": "^1.13.2",
-    "breeze-plugin-kit": "^0.14.0"
+    "breeze-plugin-kit": "^0.18.0"
   },
   "devDependencies": {
     "@rspack/cli": "^2.1.8",

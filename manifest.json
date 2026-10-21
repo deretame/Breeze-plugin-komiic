@@ -3,10 +3,12 @@
   "uuid": "cafbf766-0231-4f99-ace4-0a26631fff12",
   "iconUrl": "https://raw.githubusercontent.com/deretame/Breeze-plugin-komiic/main/assets/app_icon.webp",
   "describe": "Komiic 漫画源插件",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "home": "https://github.com/deretame/Breeze-plugin-komiic",
   "updateUrl": "https://api.github.com/repos/deretame/Breeze-plugin-komiic/releases/latest",
   "npmName": "breeze-plugin-komiic",
+  "haveHome": true,
+  "haveCloudFavorite": true,
   "function": [
     {
       "id": "recent",

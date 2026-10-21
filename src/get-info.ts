@@ -1,65 +1,55 @@
-import type { PluginInfo } from "breeze-plugin-kit";
+import type { ComicListScene, PluginInfo } from "breeze-plugin-kit";
 import { PLUGIN_ID } from "./common";
 
-export function buildPluginInfo(): PluginInfo {
-  const recentScene = {
-    title: "最近更新",
-    source: PLUGIN_ID,
-    body: {
-      type: "pluginPagedComicList" as const,
-      request: {
-        fnPath: "getHomeRecent",
-        core: {},
-        extern: {
-          source: "recent",
-          mode: "recent",
-        },
+export const recentScene: ComicListScene = {
+  title: "最近更新",
+  source: PLUGIN_ID,
+  body: {
+    type: "pluginPagedComicList",
+    request: {
+      fnPath: "getHomeRecent",
+      core: {},
+      extern: {
+        source: "recent",
+        mode: "recent",
       },
     },
-  };
-  const rankingScene = {
-    title: "排行榜",
-    source: PLUGIN_ID,
-    body: {
-      type: "pluginPagedComicList" as const,
-      request: {
-        fnPath: "getHomeRanking",
-        core: {},
-        extern: {
-          source: "ranking",
-          mode: "ranking",
-          orderBy: "MONTH_VIEWS",
-        },
-      },
-    },
-    filter: {
-      fnPath: "getHomeRankingFilterBundle",
+  },
+};
+
+export const rankingScene: ComicListScene = {
+  title: "排行榜",
+  source: PLUGIN_ID,
+  body: {
+    type: "pluginPagedComicList",
+    request: {
+      fnPath: "getHomeRanking",
+      core: {},
       extern: {
         source: "ranking",
         mode: "ranking",
         orderBy: "MONTH_VIEWS",
       },
     },
-  };
-  const categoryScene = {
-    title: "分类",
-    source: PLUGIN_ID,
-    body: {
-      type: "pluginPagedComicList" as const,
-      request: {
-        fnPath: "getHomeCategory",
-        core: {},
-        extern: {
-          source: "category",
-          mode: "category",
-          categoryId: "0",
-          orderBy: "DATE_UPDATED",
-          status: "",
-        },
-      },
+  },
+  filter: {
+    fnPath: "getHomeRankingFilterBundle",
+    extern: {
+      source: "ranking",
+      mode: "ranking",
+      orderBy: "MONTH_VIEWS",
     },
-    filter: {
-      fnPath: "getHomeCategoryFilterBundle",
+  },
+};
+
+export const categoryScene: ComicListScene = {
+  title: "分类",
+  source: PLUGIN_ID,
+  body: {
+    type: "pluginPagedComicList",
+    request: {
+      fnPath: "getHomeCategory",
+      core: {},
       extern: {
         source: "category",
         mode: "category",
@@ -68,42 +58,57 @@ export function buildPluginInfo(): PluginInfo {
         status: "",
       },
     },
-  };
-  const cloudFavoriteScene = {
-    title: "云端收藏",
-    source: PLUGIN_ID,
-    body: {
-      type: "pluginPagedComicList" as const,
-      request: {
-        fnPath: "getCloudFavoriteData",
-        core: {},
-        extern: {
-          source: "cloudFavorite",
-          folderId: "__default__",
-          order: "DATE_UPDATED",
-        },
-      },
+  },
+  filter: {
+    fnPath: "getHomeCategoryFilterBundle",
+    extern: {
+      source: "category",
+      mode: "category",
+      categoryId: "0",
+      orderBy: "DATE_UPDATED",
+      status: "",
     },
-    filter: {
-      fnPath: "getCloudFavoriteFilterBundle",
+  },
+};
+
+export const cloudFavoriteScene: ComicListScene = {
+  title: "云端收藏",
+  source: PLUGIN_ID,
+  body: {
+    type: "pluginPagedComicList",
+    request: {
+      fnPath: "getCloudFavoriteData",
+      core: {},
       extern: {
         source: "cloudFavorite",
         folderId: "__default__",
         order: "DATE_UPDATED",
       },
     },
-  };
+  },
+  filter: {
+    fnPath: "getCloudFavoriteFilterBundle",
+    extern: {
+      source: "cloudFavorite",
+      folderId: "__default__",
+      order: "DATE_UPDATED",
+    },
+  },
+};
 
+export function buildPluginInfo(): PluginInfo {
   return {
     name: "Komiic",
     uuid: PLUGIN_ID,
     iconUrl:
       "https://raw.githubusercontent.com/deretame/Breeze-plugin-komiic/main/assets/app_icon.webp",
     describe: "Komiic 漫画源插件",
-    version: "0.0.5",
+    version: "0.1.0",
     home: "https://github.com/deretame/Breeze-plugin-komiic",
     updateUrl: "https://api.github.com/repos/deretame/Breeze-plugin-komiic/releases/latest",
     npmName: "breeze-plugin-komiic",
+    haveHome: true,
+    haveCloudFavorite: true,
     function: [
       {
         id: "recent",
